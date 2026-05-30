@@ -103,6 +103,29 @@ def compute_bollinger_bands(
         "bb_bandwidth" : bandwidth,
     })
 
+def compute_obv(df: pd.DataFrame) -> pd.Series:
+    """
+    On Balance Volume — tracks whether volume is flowing
+    into or out of a stock. Confirms or contradicts price moves.
+
+    Rising OBV with rising price  → confirmed trend (strong signal)
+    Rising OBV with falling price → accumulation (reversal coming)
+    Falling OBV with rising price → distribution (warning sign)
+    """
+    obv    = [0]
+    closes = df["close"].values
+    volumes = df["volume"].values
+
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i - 1]:
+            obv.append(obv[-1] + volumes[i])
+        elif closes[i] < closes[i - 1]:
+            obv.append(obv[-1] - volumes[i])
+        else:
+            obv.append(obv[-1])
+
+    return pd.Series(obv, index=df.index, name="obv")
+
 
 def compute_all(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -127,7 +150,8 @@ def compute_all(df: pd.DataFrame) -> pd.DataFrame:
     bb   = compute_bollinger_bands(df)
 
     # Combine everything into one DataFrame
-    result = pd.concat([df, rsi, macd, sma, bb], axis=1)
+    obv    = compute_obv(df)
+    result = pd.concat([df, rsi, macd, sma, bb, obv], axis=1)
 
     # Drop rows where indicators haven't had enough data to calculate yet
     # (first ~50 rows will have NaN values until moving averages warm up)
