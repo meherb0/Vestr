@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: #0a0a0f;
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #12121a;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e1e2e;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #6366f1;
+}
+
+/* Verdict colors */
+.verdict-strong-buy  { color: #22c55e; }
+.verdict-buy         { color: #86efac; }
+.verdict-watch       { color: #eab308; }
+.verdict-sell        { color: #f97316; }
+.verdict-strong-sell { color: #ef4444; }
+
+.verdict-bg-strong-buy  { background-color: rgba(34, 197, 94, 0.1);  border: 1px solid rgba(34, 197, 94, 0.3);  }
+.verdict-bg-buy         { background-color: rgba(134, 239, 172, 0.1); border: 1px solid rgba(134, 239, 172, 0.3);}
+.verdict-bg-watch       { background-color: rgba(234, 179, 8, 0.1);   border: 1px solid rgba(234, 179, 8, 0.3);  }
+.verdict-bg-sell        { background-color: rgba(249, 115, 22, 0.1);  border: 1px solid rgba(249, 115, 22, 0.3); }
+.verdict-bg-strong-sell { background-color: rgba(239, 68, 68, 0.1);   border: 1px solid rgba(239, 68, 68, 0.3);  }
