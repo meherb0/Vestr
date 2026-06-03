@@ -1,12 +1,13 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react'
 import { useAuth } from './AuthContext'
+import { authService } from '../services/api'
 
 type Theme = 'dark' | 'light' | 'system'
 
 interface ThemeContextType {
-  theme     : Theme
-  setTheme  : (theme: Theme) => void
-  isDark    : boolean
+  theme    : Theme
+  setTheme : (theme: Theme) => void
+  isDark   : boolean
 }
 
 const ThemeContext = createContext<ThemeContextType | null>(null)
@@ -17,17 +18,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     (user?.theme as Theme) || 'dark'
   )
 
-  // Sync theme with user preferences when user loads
   useEffect(() => {
     if (user?.theme) {
       setThemeState(user.theme as Theme)
     }
   }, [user?.theme])
 
-  // Apply theme to document root
   useEffect(() => {
     const root = document.documentElement
-
     if (theme === 'system') {
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
       root.setAttribute('data-theme', prefersDark ? 'dark' : 'light')
@@ -38,15 +36,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = async (newTheme: Theme) => {
     setThemeState(newTheme)
-
-    // Persist to backend if logged in
     if (isLoggedIn && user) {
       try {
-        const { authService } = await import('../services/api')
         const updated = await authService.updatePreferences({ theme: newTheme })
         updateUser(updated)
       } catch {
-        // Silently fail — theme still applies locally
+        // Silently fail
       }
     }
   }
