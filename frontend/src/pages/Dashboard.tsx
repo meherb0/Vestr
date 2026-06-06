@@ -30,6 +30,7 @@ export default function Dashboard() {
   const [portfolio, setPortfolio]       = useState<PortfolioSummary | null>(null)
   const [watchlist, setWatchlist]       = useState<WatchlistItem[]>([])
   const [watchSignals, setWatchSignals] = useState<Record<string, any>>({})
+  const [watchSignalsLoading, setWatchSignalsLoading] = useState<Record<string, boolean>>({})
   const [screener, setScreener]         = useState<{ must_buy: ScreenerResult[]; must_sell: ScreenerResult[] } | null>(null)
   const [screenerLoading, setScreenerLoading]   = useState(false)
   const [portfolioLoading, setPortfolioLoading] = useState(true)
@@ -56,15 +57,25 @@ export default function Dashboard() {
       .then(setPortfolio).catch(() => {})
       .finally(() => setPortfolioLoading(false))
 
+    const fetchWatchlistPrices = (items: any[]) => {
+      items.forEach((item: any) => {
+        setWatchSignalsLoading(prev => ({ ...prev, [item.ticker]: true }))
+        stockService.getSummary(item.ticker)
+          .then(s => {
+            setWatchSignals(prev => ({ ...prev, [item.ticker]: s }))
+            setWatchSignalsLoading(prev => ({ ...prev, [item.ticker]: false }))
+          })
+          .catch(() => setWatchSignalsLoading(prev => ({ ...prev, [item.ticker]: false })))
+      })
+    }
+
     watchlistService.getAll()
       .then(items => {
         setWatchlist(items)
         setWatchlistLoading(false)
-        items.forEach(item =>
-          stockService.getSummary(item.ticker)
-            .then(s => setWatchSignals(prev => ({ ...prev, [item.ticker]: s })))
-            .catch(() => {})
-        )
+        fetchWatchlistPrices(items)
+        const iv = setInterval(() => fetchWatchlistPrices(items), 30000)
+        return () => clearInterval(iv)
       })
       .catch(() => setWatchlistLoading(false))
   }, [])
@@ -118,7 +129,6 @@ export default function Dashboard() {
 
         {/* Nav */}
         <nav style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '11px 32px', borderBottom: '1px solid rgba(59,130,246,0.12)', background: 'rgba(6,13,31,0.97)', backdropFilter: 'blur(20px)', position: 'sticky' as const, top: 0, zIndex: 100 }}>
-
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 8 }}>
             <svg width="22" height="22" viewBox="0 0 28 28" fill="none">
               <rect width="28" height="28" rx="4" stroke="#6366f1" strokeWidth="1.5"/>
@@ -153,7 +163,6 @@ export default function Dashboard() {
             {user?.mode?.toUpperCase() || 'ROOKIE'}
           </span>
 
-          {/* User dropdown */}
           <div ref={userMenuRef} style={{ position: 'relative' as const }}>
             <button
               onClick={() => setShowUserMenu(v => !v)}
@@ -185,7 +194,6 @@ export default function Dashboard() {
           </div>
         </nav>
 
-        {/* Content */}
         <div style={{ maxWidth: 1320, margin: '0 auto', padding: '32px' }}>
 
           <div style={{ marginBottom: 32, animation: 'fadeUp 0.5s ease 0.1s both' }}>
@@ -317,27 +325,36 @@ export default function Dashboard() {
               </div>
             ) : (
               <div>
-                <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr 80px 80px 120px 60px', padding: '8px 20px', borderBottom: '1px solid rgba(59,130,246,0.05)' }}>
+                {/* Header */}
+                <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr 90px 90px 120px 60px', padding: '8px 20px', borderBottom: '1px solid rgba(59,130,246,0.05)' }}>
                   {['TICKER', 'NAME', 'PRICE', 'CHANGE', 'SIGNAL', ''].map(h => (
                     <div key={h} style={{ fontSize: 9, color: 'rgba(99,102,241,0.5)', fontFamily: 'monospace', letterSpacing: '0.08em' }}>{h}</div>
                   ))}
                 </div>
                 {watchlist.map((item, i) => {
-                  const sig = watchSignals[item.ticker]
+                  const sig        = watchSignals[item.ticker]
+                  const sigLoading = watchSignalsLoading[item.ticker]
                   return (
                     <div key={item.id}
-                      style={{ display: 'grid', gridTemplateColumns: '100px 1fr 80px 80px 120px 60px', padding: '12px 20px', cursor: 'pointer', borderBottom: i < watchlist.length - 1 ? '1px solid rgba(59,130,246,0.05)' : 'none', transition: 'background 0.15s' }}
+                      style={{ display: 'grid', gridTemplateColumns: '100px 1fr 90px 90px 120px 60px', padding: '12px 20px', cursor: 'pointer', borderBottom: i < watchlist.length - 1 ? '1px solid rgba(59,130,246,0.05)' : 'none', transition: 'background 0.15s', alignItems: 'center' }}
                       onClick={() => navigate(`/stock/${item.ticker}`)}
                       onMouseEnter={e => (e.currentTarget.style.background = 'rgba(59,130,246,0.04)')}
                       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                     >
                       <div style={{ fontSize: 13, fontWeight: 700, fontFamily: 'monospace', color: '#f1f5f9' }}>{item.ticker}</div>
                       <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{item.name || '—'}</div>
-                      <div style={{ fontSize: 12, fontFamily: 'monospace', color: '#e2e8f0' }}>{sig ? `$${sig.close.toFixed(2)}` : '—'}</div>
-                      <div style={{ fontSize: 12, fontFamily: 'monospace', color: sig ? (sig.change_pct >= 0 ? '#4ade80' : '#f87171') : '#64748b' }}>
-                        {sig ? `${sig.change_pct >= 0 ? '+' : ''}${sig.change_pct.toFixed(2)}%` : '—'}
+                      <div style={{ fontSize: 12, fontFamily: 'monospace', color: '#e2e8f0' }}>
+                        {sigLoading ? <span style={{ color: '#334155' }}>...</span> : sig ? `$${sig.close.toFixed(2)}` : '—'}
                       </div>
-                      <div><VerdictBadge verdict="WATCH" /></div>
+                      <div style={{ fontSize: 12, fontFamily: 'monospace', color: sig ? (sig.change_pct >= 0 ? '#4ade80' : '#f87171') : '#64748b' }}>
+                        {sigLoading ? <span style={{ color: '#334155' }}>...</span> : sig ? `${sig.change_pct >= 0 ? '+' : ''}${sig.change_pct.toFixed(2)}%` : '—'}
+                      </div>
+                      <div>
+                        {sigLoading
+                          ? <span style={{ fontSize: 9, color: '#334155', fontFamily: 'monospace' }}>LOADING...</span>
+                          : <VerdictBadge verdict={sig?.verdict || 'WATCH'} />
+                        }
+                      </div>
                       <div style={{ fontSize: 10, color: '#818cf8', fontFamily: 'monospace' }}>VIEW →</div>
                     </div>
                   )

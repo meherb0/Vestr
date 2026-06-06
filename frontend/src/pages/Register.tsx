@@ -4,19 +4,18 @@ import { useAuth } from '../context/AuthContext'
 
 export default function Register() {
   const navigate                    = useNavigate()
-  const { register, isLoading }     = useAuth()
+  const { register, isLoading, isLoggedIn } = useAuth()
   const [email, setEmail]           = useState('')
   const [username, setUsername]     = useState('')
   const [password, setPassword]     = useState('')
   const [confirm, setConfirm]       = useState('')
   const [error, setError]           = useState('')
-  const [visible, setVisible]       = useState(false)
+  const [visible, setVisible]       = useState(true)
   const [exiting, setExiting]       = useState(false)
 
   useEffect(() => {
-    const t = setTimeout(() => setVisible(true), 60)
-    return () => clearTimeout(t)
-  }, [])
+  if (isLoggedIn) navigate('/dashboard')
+}, [])
 
   const goBack = () => {
     setExiting(true)

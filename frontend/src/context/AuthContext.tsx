@@ -2,26 +2,22 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { User } from '../types'
 import { authService, saveAuth, clearAuth, getStoredUser } from '../services/api'
 
-// ── Context shape ─────────────────────────────────────────────
 interface AuthContextType {
-  user          : User | null
-  isLoading     : boolean
-  isLoggedIn    : boolean
-  login         : (email: string, password: string) => Promise<void>
-  register      : (email: string, username: string, password: string) => Promise<void>
-  logout        : () => void
-  updateUser    : (updated: User) => void
+  user        : User | null
+  isLoggedIn  : boolean
+  isLoading   : boolean
+  login       : (email: string, password: string) => Promise<void>
+  register    : (email: string, username: string, password: string) => Promise<void>
+  logout      : () => void
+  updateUser  : (user: User) => void
 }
 
-// ── Create context ────────────────────────────────────────────
 const AuthContext = createContext<AuthContextType | null>(null)
 
-// ── Provider ──────────────────────────────────────────────────
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user,      setUser     ] = useState<User | null>(getStoredUser())
+  const [user, setUser]           = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
-  // On mount — verify stored token is still valid
   useEffect(() => {
     const stored = getStoredUser()
     if (stored) {
@@ -38,7 +34,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsLoading(true)
     try {
       const data = await authService.login(email, password)
-      saveAuth(data)
+      saveAuth(data.access_token, data.user)
       setUser(data.user)
     } finally {
       setIsLoading(false)
@@ -49,7 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsLoading(true)
     try {
       const data = await authService.register(email, username, password)
-      saveAuth(data)
+      saveAuth(data.access_token, data.user)
       setUser(data.user)
     } finally {
       setIsLoading(false)
@@ -69,8 +65,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider value={{
       user,
-      isLoading,
       isLoggedIn : !!user,
+      isLoading,
       login,
       register,
       logout,
@@ -81,9 +77,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 }
 
-// ── Hook ──────────────────────────────────────────────────────
 export function useAuth() {
   const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used inside AuthProvider')
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
   return ctx
 }

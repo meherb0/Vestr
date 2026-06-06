@@ -25,7 +25,7 @@ export default function App() {
         <Routes>
           <Route path="/"        element={<Landing />} />
           <Route path="/login"   element={isLoggedIn ? <Navigate to="/dashboard" replace /> : <Login />} />
-          <Route path="/register" element={isLoggedIn ? <Navigate to="/dashboard" replace /> : <Register />} />
+          <Route path="/register" element={<Register />} />
           <Route path="/setup"    element={<ModeSelect />} />
           <Route path="/tutorial" element={<Tutorial />} />
           <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />

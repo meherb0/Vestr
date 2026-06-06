@@ -1,190 +1,132 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
-from backend.data.database import get_db
+import time
+from fastapi import APIRouter, Depends
+from backend.api.auth import get_current_user, get_current_user_optional
 from backend.data.models import User
-from backend.api.schemas import BacktestRequest, MessageResponse
-from backend.api.auth import get_current_user_optional
-from backend.tips.generator import generate_tip
-from backend.backtest.engine import run_backtest
-from backend.data.fetcher import get_prices, fetch_and_store
 
 router = APIRouter(prefix="/api/stocks", tags=["stocks"])
 
+# ── In-memory cache ────────────────────────────────────────────
+_summary_cache : dict = {}
+_summary_time  : dict = {}
+_history_cache : dict = {}
+_history_time  : dict = {}
+SUMMARY_TTL = 60    # 1 minute for price data
+HISTORY_TTL = 300   # 5 minutes for chart data
+
+
+@router.get("/{ticker}/summary")
+async def get_summary(
+    ticker       : str,
+    current_user : User = Depends(get_current_user),
+):
+    ticker = ticker.upper().strip()
+    now    = time.time()
+
+    if ticker in _summary_cache and now - _summary_time.get(ticker, 0) < SUMMARY_TTL:
+        return _summary_cache[ticker]
+
+    import yfinance as yf
+    try:
+        stock = yf.Ticker(ticker)
+        hist  = stock.history(period="2d")
+        if hist.empty:
+            return {"ticker": ticker, "close": 0, "change_pct": 0, "verdict": "WATCH"}
+
+        close      = round(float(hist["Close"].iloc[-1]), 2)
+        prev_close = round(float(hist["Close"].iloc[-2]), 2) if len(hist) > 1 else close
+        change_pct = round(((close - prev_close) / prev_close) * 100, 2) if prev_close else 0
+
+        result = {
+            "ticker"     : ticker,
+            "close"      : close,
+            "change_pct" : change_pct,
+            "verdict"    : "WATCH",
+        }
+        _summary_cache[ticker] = result
+        _summary_time[ticker]  = now
+        return result
+
+    except Exception:
+        return {"ticker": ticker, "close": 0, "change_pct": 0, "verdict": "WATCH"}
+
+
+@router.get("/{ticker}/history")
+async def get_history(
+    ticker       : str,
+    period       : str = "1mo",
+    current_user : User = Depends(get_current_user),
+):
+    ticker    = ticker.upper().strip()
+    cache_key = f"{ticker}_{period}"
+    now       = time.time()
+
+    if cache_key in _history_cache and now - _history_time.get(cache_key, 0) < HISTORY_TTL:
+        return _history_cache[cache_key]
+
+    period_map = {
+        "1d" : ("1d",  "5m"),
+        "1w" : ("5d",  "30m"),
+        "1mo": ("1mo", "1d"),
+        "1y" : ("1y",  "1d"),
+    }
+    yf_period, yf_interval = period_map.get(period, ("1mo", "1d"))
+
+    import yfinance as yf
+    try:
+        stock = yf.Ticker(ticker)
+        hist  = stock.history(period=yf_period, interval=yf_interval)
+        if hist.empty:
+            return {"ticker": ticker, "period": period, "data": []}
+
+        data = []
+        for ts, row in hist.iterrows():
+            if period == "1d":
+                label = ts.strftime("%H:%M")
+            elif period == "1w":
+                label = ts.strftime("%a %H:%M")
+            else:
+                label = ts.strftime("%b %d")
+            data.append({
+                "date"  : label,
+                "price" : round(float(row["Close"]), 2),
+                "open"  : round(float(row["Open"]),  2),
+                "high"  : round(float(row["High"]),  2),
+                "low"   : round(float(row["Low"]),   2),
+                "volume": int(row["Volume"]),
+            })
+
+        result = {"ticker": ticker, "period": period, "data": data}
+        _history_cache[cache_key] = result
+        _history_time[cache_key]  = now
+        return result
+
+    except Exception as e:
+        return {"ticker": ticker, "period": period, "data": [], "error": str(e)}
+
 
 @router.get("/{ticker}/tip")
-def get_tip(
+async def get_tip(
     ticker       : str,
     current_user : User = Depends(get_current_user_optional),
 ):
-    """
-    Main endpoint — generates a full Vestr tip for any stock ticker.
-
-    Returns:
-        - verdict (STRONG BUY / BUY / WATCH / SELL / STRONG SELL)
-        - risk level
-        - entry suggestion
-        - rookie card (plain English)
-        - pro card (raw data)
-        - reasoning points
-        - news sentiment
-        - all underlying indicator values
-
-    Works for both guests and logged in users.
-    Logged in users get mode-aware response (rookie vs pro).
-    """
+    from backend.tips.generator import generate_tip
     ticker = ticker.upper().strip()
-
-    if not ticker.isalpha() or len(ticker) > 5:
-        raise HTTPException(
-            status_code = status.HTTP_400_BAD_REQUEST,
-            detail      = "Invalid ticker symbol."
-        )
-
-    tip = generate_tip(ticker)
-
-    if tip["error"]:
-        raise HTTPException(
-            status_code = status.HTTP_404_NOT_FOUND,
-            detail      = tip["error"]
-        )
-
-    # If logged in, attach user's mode so frontend knows which card to show
+    tip    = generate_tip(ticker)
     if current_user:
-        tip["user_mode"] = current_user.mode
-    else:
-        tip["user_mode"] = "rookie"  # default for guests
-
+        tip["user_mode"] = current_user.mode or "rookie"
     return tip
 
 
 @router.get("/{ticker}/backtest")
-def get_backtest(
+async def get_backtest(
     ticker        : str,
-    starting_cash : float = Query(default=10000.0, ge=100, le=10_000_000),
-    current_user  : User  = Depends(get_current_user_optional),
+    starting_cash : float = 10000.0,
+    current_user  : User  = Depends(get_current_user),
 ):
-    """
-    Runs a full backtest for a ticker using Vestr's ML signals.
-
-    Query params:
-        starting_cash: how much to simulate starting with (default $10,000)
-
-    Returns:
-        - total return vs buy and hold
-        - win rate, sharpe ratio, max drawdown
-        - full trade history
-        - portfolio value over time (for chart)
-    """
+    from backend.backtest.engine import run_backtest
     ticker = ticker.upper().strip()
-
-    if not ticker.isalpha() or len(ticker) > 5:
-        raise HTTPException(
-            status_code = status.HTTP_400_BAD_REQUEST,
-            detail      = "Invalid ticker symbol."
-        )
-
-    result = run_backtest(ticker, starting_cash=starting_cash)
-
-    if result["error"]:
-        raise HTTPException(
-            status_code = status.HTTP_404_NOT_FOUND,
-            detail      = result["error"]
-        )
-
-    return result
-
-
-@router.get("/{ticker}/prices")
-def get_price_history(
-    ticker : str,
-    db     : Session = Depends(get_db),
-):
-    """
-    Returns stored historical price data for a ticker.
-    Used by the frontend to render the price chart.
-
-    Fetches fresh data if not already stored.
-    Returns list of OHLCV rows sorted by date ascending.
-    """
-    ticker = ticker.upper().strip()
-
-    if not ticker.isalpha() or len(ticker) > 5:
-        raise HTTPException(
-            status_code = status.HTTP_400_BAD_REQUEST,
-            detail      = "Invalid ticker symbol."
-        )
-
-    # Fetch and store if needed
-    fetch_and_store(ticker, db, period_years=5)
-    df = get_prices(ticker, db)
-
-    if df.empty:
-        raise HTTPException(
-            status_code = status.HTTP_404_NOT_FOUND,
-            detail      = f"No price data found for {ticker}."
-        )
-
-    # Convert DataFrame to list of dicts for JSON response
-    records = []
-    for date, row in df.iterrows():
-        records.append({
-            "date"   : str(date),
-            "open"   : row["open"],
-            "high"   : row["high"],
-            "low"    : row["low"],
-            "close"  : row["close"],
-            "volume" : row["volume"],
-        })
-
-    return {
-        "ticker"  : ticker,
-        "count"   : len(records),
-        "prices"  : records,
-    }
-
-
-@router.get("/{ticker}/summary")
-def get_summary(
-    ticker : str,
-    db     : Session = Depends(get_db),
-):
-    """
-    Returns a lightweight summary for a ticker —
-    just the latest price and basic stats.
-
-    Used by watchlist and portfolio widgets
-    where we need current price without running the full tip pipeline.
-    """
-    ticker = ticker.upper().strip()
-
-    if not ticker.isalpha() or len(ticker) > 5:
-        raise HTTPException(
-            status_code = status.HTTP_400_BAD_REQUEST,
-            detail      = "Invalid ticker symbol."
-        )
-
-    fetch_and_store(ticker, db, period_years=1)
-    df = get_prices(ticker, db)
-
-    if df.empty:
-        raise HTTPException(
-            status_code = status.HTTP_404_NOT_FOUND,
-            detail      = f"No price data found for {ticker}."
-        )
-
-    latest     = df.iloc[-1]
-    prev       = df.iloc[-2] if len(df) > 1 else latest
-    change     = latest["close"] - prev["close"]
-    change_pct = (change / prev["close"]) * 100
-
-    return {
-        "ticker"     : ticker,
-        "close"      : round(latest["close"],  2),
-        "open"       : round(latest["open"],   2),
-        "high"       : round(latest["high"],   2),
-        "low"        : round(latest["low"],    2),
-        "volume"     : round(latest["volume"], 0),
-        "change"     : round(change,           2),
-        "change_pct" : round(change_pct,       2),
-        "date"       : str(df.index[-1]),
-    }
+    try:
+        result = run_backtest(ticker, starting_cash=starting_cash)
+        return result
+    except Exception as e:
+        return {"error": str(e), "ticker": ticker}

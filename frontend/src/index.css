@@ -11,6 +11,7 @@
 }
 
 body {
+  margin: 0;
   background-color: #060d1f;
   color: #e2e8f0;
   font-family: 'Space Grotesk', system-ui, sans-serif;
