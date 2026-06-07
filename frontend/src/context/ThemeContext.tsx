@@ -342,6 +342,7 @@ input:focus, textarea:focus {
 /* ═══════════════════════════════════════════
    HALLOWEEN — spooky
    ═══════════════════════════════════════════ */
+
 ${id === 'halloween' ? `
 h1, h2, h3 {
   color: #fff7ed !important;

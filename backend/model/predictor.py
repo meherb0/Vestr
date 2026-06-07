@@ -1,293 +1,187 @@
 import pickle
 import numpy as np
 import pandas as pd
-from backend.data.database import SessionLocal, init_db
-from backend.data.fetcher import get_prices, fetch_and_store
-from backend.indicators.indicators import compute_all
-from backend.news.sentiment import analyse_ticker_sentiment
-from backend.model.train import (
-    engineer_features,
-    FEATURE_COLUMNS,
-    MODEL_PATH,
-    SCALER_PATH
-)
+from pathlib import Path
 
-# Confidence threshold — predictions below this get flagged as uncertain
-MIN_CONFIDENCE = 0.45
+MODEL_PATH  = Path(__file__).parent / 'vestr_model.pkl'
+SCALER_PATH = Path(__file__).parent / 'vestr_scaler.pkl'
+
+FEATURE_COLS = [
+    'rsi','macd_line','signal_line','sma_10','sma_50',
+    'bb_upper','bb_lower','bb_bandwidth','obv',
+    'close_norm','volume_norm',
+]
 
 
-def load_model():
-    """
-    Loads the trained Random Forest and scaler from disk.
-    Raises a clear error if model hasn't been trained yet.
-    """
+def _load_model():
+    with open(MODEL_PATH, 'rb') as f:
+        return pickle.load(f)
+
+def _load_scaler():
+    with open(SCALER_PATH, 'rb') as f:
+        return pickle.load(f)
+
+
+def _get_price_data(ticker: str) -> pd.DataFrame:
+    """Try SQLite first, fall back to yFinance for any ticker."""
+    ticker = ticker.upper().strip()
+
+    # Try SQLite
     try:
-        with open(MODEL_PATH,  "rb") as f:
-            model  = pickle.load(f)
-        with open(SCALER_PATH, "rb") as f:
-            scaler = pickle.load(f)
-        return model, scaler
-    except FileNotFoundError:
-        raise FileNotFoundError(
-            "[Vestr] Model not found. Run: python -m backend.model.train"
-        )
+        from backend.data.database import SessionLocal
+        from backend.data.models import StockPrice
+
+        db = SessionLocal()
+        try:
+            records = (
+                db.query(StockPrice)
+                .filter(StockPrice.ticker == ticker)
+                .order_by(StockPrice.date)
+                .all()
+            )
+            if len(records) >= 150:
+                df = pd.DataFrame([{
+                    'Open'  : r.open,
+                    'High'  : r.high,
+                    'Low'   : r.low,
+                    'Close' : r.close,
+                    'Volume': r.volume,
+                } for r in records], index=[r.date for r in records])
+                df.index = pd.to_datetime(df.index)
+                return df
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    # Fall back to yFinance — works for any ticker
+    import yfinance as yf
+    df = yf.Ticker(ticker).history(period='2y')
+    if df.empty:
+        raise ValueError(f"No data found for {ticker}")
+    return df[['Open','High','Low','Close','Volume']].copy().dropna()
+
+
+def _compute_indicators(df: pd.DataFrame) -> dict:
+    """Computes all indicators and returns both ML features and display values."""
+    close = df['Close']
+    vol   = df['Volume']
+
+    # RSI
+    delta    = close.diff()
+    gain     = delta.clip(lower=0)
+    loss     = -delta.clip(upper=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs       = avg_gain / avg_loss.replace(0, np.nan)
+    rsi      = 100 - (100 / (1 + rs))
+
+    # MACD
+    ema12       = close.ewm(span=12, adjust=False).mean()
+    ema26       = close.ewm(span=26, adjust=False).mean()
+    macd_line   = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+
+    # SMAs
+    sma_10 = close.rolling(10).mean()
+    sma_50 = close.rolling(50).mean()
+
+    # Bollinger Bands
+    sma_20       = close.rolling(20).mean()
+    std_20       = close.rolling(20).std()
+    bb_upper     = sma_20 + 2 * std_20
+    bb_lower     = sma_20 - 2 * std_20
+    bb_bandwidth = (bb_upper - bb_lower) / sma_20.replace(0, np.nan)
+
+    # OBV
+    obv = (np.sign(close.diff()) * vol).fillna(0).cumsum()
+
+    # Normalised
+    close_norm  = close / close.rolling(50).mean()
+    volume_norm = vol / vol.rolling(20).mean()
+
+    i = -1
+    return {
+        # Display values
+        'rsi'          : float(rsi.iloc[i]),
+        'macd_line'    : float(macd_line.iloc[i]),
+        'signal_line'  : float(signal_line.iloc[i]),
+        'sma_10'       : float(sma_10.iloc[i]),
+        'sma_50'       : float(sma_50.iloc[i]),
+        'bb_upper'     : float(bb_upper.iloc[i]),
+        'bb_lower'     : float(bb_lower.iloc[i]),
+        'bb_bandwidth' : float(bb_bandwidth.iloc[i]),
+        'obv'          : float(obv.iloc[i]),
+        'close'        : float(close.iloc[i]),
+        # ML-only features
+        'close_norm'   : float(close_norm.iloc[i]),
+        'volume_norm'  : float(volume_norm.iloc[i]),
+    }
 
 
 def predict(ticker: str) -> dict:
-    """
-    Makes a live BUY / SELL / HOLD prediction for any stock ticker.
-
-    Pipeline:
-        1. Fetch + store latest price data
-        2. Compute all technical indicators
-        3. Engineer derived features
-        4. Run through trained Random Forest
-        5. Pull live news sentiment
-        6. Combine into one clean prediction result
-
-    Args:
-        ticker: stock symbol e.g. "AAPL"
-
-    Returns:
-        dict with full prediction details — signal, confidence,
-        indicator snapshot, sentiment, and plain English reasoning
-    """
+    """Full prediction for any ticker on any exchange."""
     ticker = ticker.upper().strip()
 
-    # Load model
-    model, scaler = load_model()
-
-    # Get data
-    init_db()
-    db = SessionLocal()
-
     try:
-        # Fetch latest prices
-        fetch_and_store(ticker, db, period_years=5)
-        prices = get_prices(ticker, db)
+        df         = _get_price_data(ticker)
+        indicators = _compute_indicators(df)
 
-        if prices.empty:
-            return _error_result(ticker, "No price data found for this ticker.")
+        model  = _load_model()
+        scaler = _load_scaler()
 
-    finally:
-        db.close()
+        X        = np.array([[indicators[f] for f in FEATURE_COLS]])
+        X_scaled = scaler.transform(X)
 
-    # Compute indicators + engineer features
-    df = compute_all(prices)
-    if len(df) < 60:
-        return _error_result(ticker, "Not enough historical data to make a prediction.")
+        classes   = list(model.classes_)
+        proba     = model.predict_proba(X_scaled)[0]
+        prob_dict = {c.lower(): float(p) for c, p in zip(classes, proba)}
 
-    df = engineer_features(df)
+        buy_prob  = prob_dict.get('buy',  0.33)
+        hold_prob = prob_dict.get('hold', 0.34)
+        sell_prob = prob_dict.get('sell', 0.33)
 
-    # Check all features are present
-    missing = [f for f in FEATURE_COLUMNS if f not in df.columns]
-    if missing:
-        return _error_result(ticker, f"Missing features: {missing}")
+        confidence = max(buy_prob, hold_prob, sell_prob)
 
-    # Get the most recent row — that's today's prediction
-    latest = df[FEATURE_COLUMNS].iloc[-1].values.reshape(1, -1)
-    latest_df     = pd.DataFrame(latest, columns=FEATURE_COLUMNS)
-    latest_scaled = scaler.transform(latest_df)
+        if buy_prob >= sell_prob and buy_prob >= hold_prob:
+            signal = 'BUY'
+        elif sell_prob >= buy_prob and sell_prob >= hold_prob:
+            signal = 'SELL'
+        else:
+            signal = 'HOLD'
 
-    # Get prediction + probability scores for all 3 classes
-    # proba = [P(SELL), P(HOLD), P(BUY)]
-    proba      = model.predict_proba(latest_scaled)[0]
-    prediction = model.predict(latest_scaled)[0]
+        # Display indicators (without ML-only fields)
+        display_indicators = {k: v for k, v in indicators.items()
+                               if k not in ('close_norm', 'volume_norm')}
 
-    sell_conf = round(float(proba[0]), 4)
-    hold_conf = round(float(proba[1]), 4)
-    buy_conf  = round(float(proba[2]), 4)
-    max_conf  = round(float(max(proba)), 4)
+        return {
+            'ticker'       : ticker,
+            'signal'       : signal,
+            'confidence'   : confidence,
+            'is_confident' : confidence >= 0.45,
+            'probabilities': {
+                'buy'  : buy_prob,
+                'hold' : hold_prob,
+                'sell' : sell_prob,
+            },
+            'indicators' : display_indicators,
+            'sentiment'  : {},   # filled by generator.py
+            'reasoning'  : [],   # filled by generator.py
+            'error'      : None,
+        }
 
-    # Map numeric label → signal string
-    signal_map = {0: "SELL", 1: "HOLD", 2: "BUY"}
-    signal     = signal_map[prediction]
-
-    # Flag low confidence predictions
-    is_confident = max_conf >= MIN_CONFIDENCE
-
-    # Get latest indicator snapshot for display
-    latest_row = df.iloc[-1]
-    indicators = {
-        "rsi"          : round(latest_row["rsi"],         2),
-        "macd_line"    : round(latest_row["macd_line"],   4),
-        "signal_line"  : round(latest_row["signal_line"], 4),
-        "sma_10"       : round(latest_row["sma_10"],      2),
-        "sma_50"       : round(latest_row["sma_50"],      2),
-        "bb_upper"     : round(latest_row["bb_upper"],    2),
-        "bb_lower"     : round(latest_row["bb_lower"],    2),
-        "bb_bandwidth" : round(latest_row["bb_bandwidth"],4),
-        "obv"          : round(latest_row["obv"],         0),
-        "close"        : round(latest_row["close"],       2),
-    }
-
-    # Get live news sentiment
-    print(f"[Vestr] Fetching news sentiment for {ticker}...")
-    sentiment = analyse_ticker_sentiment(ticker, max_articles=20)
-
-    # Build indicator reasoning — plain English explanations
-    reasoning = _build_reasoning(indicators, sentiment)
-
-    return {
-        "ticker"        : ticker,
-        "signal"        : signal,
-        "confidence"    : max_conf,
-        "is_confident"  : is_confident,
-        "probabilities" : {
-            "buy"  : buy_conf,
-            "hold" : hold_conf,
-            "sell" : sell_conf,
-        },
-        "indicators"    : indicators,
-        "sentiment"     : {
-            "label"         : sentiment["overall_label"],
-            "score"         : sentiment["overall_score"],
-            "bullish_pct"   : sentiment["bullish_pct"],
-            "bearish_pct"   : sentiment["bearish_pct"],
-            "article_count" : sentiment["article_count"],
-            "summary"       : sentiment["summary"],
-            "headlines"     : sentiment["articles"][:5],
-        },
-        "reasoning"     : reasoning,
-        "error"         : None,
-    }
-
-
-def _build_reasoning(indicators: dict, sentiment: dict) -> list[str]:
-    """
-    Translates raw indicator values into plain English reasoning points.
-    This powers both the rookie tip card and the pro detail view.
-
-    Each point explains WHAT the indicator is saying and WHY it matters.
-    """
-    reasons = []
-
-    # RSI
-    rsi = indicators["rsi"]
-    if rsi >= 70:
-        reasons.append(
-            f"RSI is {rsi:.1f} — the stock is overbought. "
-            f"It has been bought so aggressively that a pullback is statistically likely soon."
-        )
-    elif rsi <= 30:
-        reasons.append(
-            f"RSI is {rsi:.1f} — the stock is oversold. "
-            f"Heavy selling may be exhausted, creating a potential buying opportunity."
-        )
-    else:
-        reasons.append(
-            f"RSI is {rsi:.1f} — momentum is neutral, "
-            f"neither overbought nor oversold."
-        )
-
-    # MACD
-    macd   = indicators["macd_line"]
-    signal = indicators["signal_line"]
-    if macd > signal:
-        reasons.append(
-            f"MACD ({macd:.2f}) is above the signal line ({signal:.2f}) — "
-            f"short term momentum is bullish and strengthening."
-        )
-    else:
-        reasons.append(
-            f"MACD ({macd:.2f}) is below the signal line ({signal:.2f}) — "
-            f"short term momentum is bearish and weakening."
-        )
-
-    # Moving averages
-    sma10 = indicators["sma_10"]
-    sma50 = indicators["sma_50"]
-    close = indicators["close"]
-    if sma10 > sma50:
-        reasons.append(
-            f"SMA10 ({sma10:.2f}) is above SMA50 ({sma50:.2f}) — "
-            f"Golden Cross pattern. Short term trend is outpacing medium term. Bullish."
-        )
-    else:
-        reasons.append(
-            f"SMA10 ({sma10:.2f}) is below SMA50 ({sma50:.2f}) — "
-            f"Death Cross pattern. Short term trend is lagging medium term. Bearish."
-        )
-
-    if close > sma50:
-        pct = round((close - sma50) / sma50 * 100, 1)
-        reasons.append(
-            f"Price (${close:.2f}) is {pct}% above the 50-day average — "
-            f"stock is extended above its medium term trend."
-        )
-    else:
-        pct = round((sma50 - close) / sma50 * 100, 1)
-        reasons.append(
-            f"Price (${close:.2f}) is {pct}% below the 50-day average — "
-            f"stock is trading below its medium term trend."
-        )
-
-    # Bollinger Bands
-    bb_upper = indicators["bb_upper"]
-    bb_lower = indicators["bb_lower"]
-    bb_bw    = indicators["bb_bandwidth"]
-    if close >= bb_upper * 0.97:
-        reasons.append(
-            f"Price is near the upper Bollinger Band (${bb_upper:.2f}) — "
-            f"overbought territory. High risk entry point."
-        )
-    elif close <= bb_lower * 1.03:
-        reasons.append(
-            f"Price is near the lower Bollinger Band (${bb_lower:.2f}) — "
-            f"oversold territory. Potential value entry point."
-        )
-
-    if bb_bw < 0.08:
-        reasons.append(
-            f"Bollinger Bands are squeezing (bandwidth: {bb_bw:.3f}) — "
-            f"low volatility period. A significant price move is likely incoming."
-        )
-
-    # News sentiment
-    sent_label = sentiment["overall_label"]
-    sent_score = sentiment["overall_score"]
-    sent_summary = sentiment["summary"]
-    reasons.append(f"News sentiment: {sent_label} (score: {sent_score}). {sent_summary}")
-
-    return reasons
-
-
-def _error_result(ticker: str, message: str) -> dict:
-    """Returns a clean error structure when prediction can't be made"""
-    return {
-        "ticker"        : ticker,
-        "signal"        : "UNKNOWN",
-        "confidence"    : 0.0,
-        "is_confident"  : False,
-        "probabilities" : {"buy": 0.0, "hold": 0.0, "sell": 0.0},
-        "indicators"    : {},
-        "sentiment"     : {},
-        "reasoning"     : [],
-        "error"         : message,
-    }
-
-
-if __name__ == "__main__":
-    """
-    Live prediction test — run this to see a full prediction
-    python -m backend.model.predictor
-    """
-    import json
-
-    ticker = "AAPL"
-    print(f"\n[Vestr] Running prediction for {ticker}...\n")
-
-    result = predict(ticker)
-
-    print(f"  Ticker:     {result['ticker']}")
-    print(f"  Signal:     {result['signal']}")
-    print(f"  Confidence: {result['confidence'] * 100:.1f}%")
-    print(f"  Confident:  {result['is_confident']}")
-    print(f"\n  Probabilities:")
-    print(f"    BUY:  {result['probabilities']['buy']  * 100:.1f}%")
-    print(f"    HOLD: {result['probabilities']['hold'] * 100:.1f}%")
-    print(f"    SELL: {result['probabilities']['sell'] * 100:.1f}%")
-    print(f"\n  Sentiment: {result['sentiment']['label']} ({result['sentiment']['score']})")
-    print(f"\n  Reasoning:")
-    for i, r in enumerate(result["reasoning"], 1):
-        print(f"    {i}. {r}")
+    except Exception as e:
+        return {
+            'ticker'       : ticker,
+            'signal'       : 'HOLD',
+            'confidence'   : 0.0,
+            'is_confident' : False,
+            'probabilities': {'buy': 0.33, 'hold': 0.34, 'sell': 0.33},
+            'indicators'   : {
+                'rsi':0,'macd_line':0,'signal_line':0,'sma_10':0,'sma_50':0,
+                'bb_upper':0,'bb_lower':0,'bb_bandwidth':0,'obv':0,'close':0,
+            },
+            'sentiment'    : {},
+            'reasoning'    : [],
+            'error'        : str(e),
+        }

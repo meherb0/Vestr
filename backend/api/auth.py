@@ -55,7 +55,7 @@ def get_current_user(
     if user_id is None:
         raise credentials_exception
     user = db.query(User).filter(User.id == user_id).first()
-    if user is None or not user.is_active:
+    if user is None:
         raise credentials_exception
     return user
 
@@ -82,9 +82,9 @@ def get_user_by_username(username: str, db: Session) -> Optional[User]:
 
 def create_user(email: str, username: str, password: str, db: Session) -> User:
     user = User(
-        email         = email.lower(),
-        username      = username.lower(),
-        password_hash = hash_password(password),
+        email           = email.lower(),
+        username        = username.lower(),
+        hashed_password = hash_password(password),
     )
     db.add(user)
     db.commit()
@@ -92,10 +92,14 @@ def create_user(email: str, username: str, password: str, db: Session) -> User:
     return user
 
 
-def authenticate_user(email: str, password: str, db: Session) -> Optional[User]:
-    user = get_user_by_email(email, db)
+def authenticate_user(email_or_username: str, password: str, db: Session) -> Optional[User]:
+    # Try email first
+    user = db.query(User).filter(User.email == email_or_username.lower()).first()
+    # Fall back to username
+    if not user:
+        user = db.query(User).filter(User.username == email_or_username.lower()).first()
     if not user:
         return None
-    if not verify_password(password, user.password_hash):
+    if not verify_password(password, user.hashed_password):
         return None
     return user

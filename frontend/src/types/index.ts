@@ -190,9 +190,10 @@ export interface ScreenerResult {
   rsi        : number
   sentiment  : string
   risk_level : string
-  entry      : { price: number | null; rationale: string }
+  entry      : any
   summary    : string
 }
+
 
 export interface ScreenerResponse {
   must_buy       : ScreenerResult[]

@@ -44,7 +44,6 @@ class UserResponse(BaseModel):
     username   : str
     mode       : str
     theme      : str
-    layout     : str
     created_at : datetime
 
     class Config:
@@ -52,26 +51,13 @@ class UserResponse(BaseModel):
 
 
 class UpdatePreferencesRequest(BaseModel):
-    mode   : Optional[str] = None
-    theme  : Optional[str] = None
-    layout : Optional[str] = None
+    mode  : Optional[str] = None
+    theme : Optional[str] = None
 
     @field_validator("mode")
     def mode_valid(cls, v):
         if v and v not in ("rookie", "pro"):
             raise ValueError("Mode must be rookie or pro")
-        return v
-
-    @field_validator("theme")
-    def theme_valid(cls, v):
-        if v and v not in ("dark", "light", "system"):
-            raise ValueError("Theme must be dark, light or system")
-        return v
-
-    @field_validator("layout")
-    def layout_valid(cls, v):
-        if v and v not in ("classic", "trader", "minimal"):
-            raise ValueError("Layout must be classic, trader or minimal")
         return v
 
 
@@ -150,27 +136,25 @@ class PortfolioAddRequest(BaseModel):
 class PortfolioItemResponse(BaseModel):
     id            : int
     ticker        : str
-    name          : Optional[str]
     shares        : float
     avg_buy_price : float
-    added_at      : datetime
+    created_at    : datetime
 
     class Config:
         from_attributes = True
 
 
 class PortfolioItemWithPnL(BaseModel):
-    id              : int
-    ticker          : str
-    name            : Optional[str]
-    shares          : float
-    avg_buy_price   : float
-    current_price   : Optional[float]
-    total_cost      : float
-    current_value   : Optional[float]
-    pnl             : Optional[float]
-    pnl_pct         : Optional[float]
-    added_at        : datetime
+    id            : int
+    ticker        : str
+    shares        : float
+    avg_buy_price : float
+    current_price : Optional[float]
+    total_cost    : float
+    current_value : Optional[float]
+    pnl           : Optional[float]
+    pnl_pct       : Optional[float]
+    created_at    : datetime
 
     class Config:
         from_attributes = True
@@ -184,6 +168,9 @@ class ScreenerResult(BaseModel):
     score      : int
     confidence : float
     close      : float
+    risk_level : Optional[str] = "Low"
+    rsi        : Optional[float] = 0
+    sentiment  : Optional[str] = "Neutral"
 
 
 class ScreenerResponse(BaseModel):
