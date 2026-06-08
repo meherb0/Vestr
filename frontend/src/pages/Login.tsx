@@ -135,7 +135,7 @@ export default function Login() {
                 <form onSubmit={handleSubmit} noValidate>
                   <div style={{ marginBottom: 18 }}>
                     <label style={{ display: 'block', fontSize: 10, color: 'rgba(59,130,246,0.45)', fontFamily: 'monospace', letterSpacing: '0.1em', marginBottom: 8 }}>
-                      FIELD_01 // EMAIL ADDRESS
+                      FIELD_01 // EMAIL ADDRESS or USERNAME
                     </label>
                     <input
                       type="email" value={email} required
