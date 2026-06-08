@@ -61,16 +61,16 @@ export const stockService = {
 }
 
 export const watchlistService = {
-  getAll : ()              => api.get('/watchlist').then(r => r.data),
-  add    : (ticker: string) => api.post('/watchlist', { ticker }).then(r => r.data),
-  remove : (id: string | number) => api.delete(`/watchlist/${id}`).then(r => r.data),
+  getAll : ()               => api.get('/watchlist/').then(r => r.data),
+  add    : (ticker: string) => api.post('/watchlist/', { ticker }).then(r => r.data),
+  remove : (ticker: string) => api.delete(`/watchlist/${ticker}`).then(r => r.data),
 }
 
 export const portfolioService = {
-  getAll      : ()     => api.get('/portfolio').then(r => r.data),
+  getAll      : ()     => api.get('/portfolio/').then(r => r.data),
   getSummary  : ()     => api.get('/portfolio/summary').then(r => r.data),
   addPosition : (ticker: string, shares: number, avg_buy_price: number) =>
-    api.post('/portfolio', { ticker, shares, avg_buy_price }).then(r => r.data),
+    api.post('/portfolio/', { ticker, shares, avg_buy_price }).then(r => r.data),
   add         : (data: { ticker: string; name?: string; shares: number; avg_buy_price: number }) =>
     api.post('/portfolio/', data).then(r => r.data),
   update      : (ticker: string, data: { ticker: string; shares: number; avg_buy_price: number }) =>
