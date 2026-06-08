@@ -1,4 +1,54 @@
 from backend.model.predictor import predict
+from backend.news.rss_fetcher import fetch_ticker_news
+
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    _vader = SentimentIntensityAnalyzer()
+except Exception:
+    _vader = None
+
+
+def _analyze_sentiment(ticker: str) -> dict:
+    """Fetch headlines, score each with VADER, return sentiment block."""
+    try:
+        articles = fetch_ticker_news(ticker, max_articles=12)
+    except Exception:
+        articles = []
+
+    if not articles:
+        return {"label": "Neutral", "score": 0, "summary": "",
+                "bullish_pct": 0, "bearish_pct": 0, "headlines": []}
+
+    headlines, scores = [], []
+    for a in articles:
+        title = a.get("title", "")
+        if not title:
+            continue
+        comp = _vader.polarity_scores(title)["compound"] if _vader else 0.0
+        scores.append(comp)
+        label = "Bullish" if comp >= 0.15 else "Bearish" if comp <= -0.15 else "Neutral"
+        pub = a.get("published_at")
+        headlines.append({
+            "headline"     : title,
+            "url"          : a.get("url", ""),
+            "label"        : label,
+            "compound"     : round(comp, 3),
+            "published_at" : pub.isoformat() if pub else "",
+        })
+
+    avg     = sum(scores) / len(scores) if scores else 0
+    bullish = sum(1 for s in scores if s >= 0.15)
+    bearish = sum(1 for s in scores if s <= -0.15)
+    total   = len(scores) or 1
+
+    return {
+        "label"       : "Bullish" if avg >= 0.15 else "Bearish" if avg <= -0.15 else "Neutral",
+        "score"       : round(avg, 3),
+        "summary"     : f"{bullish} bullish, {bearish} bearish out of {len(scores)} headlines.",
+        "bullish_pct" : round(bullish / total * 100, 1),
+        "bearish_pct" : round(bearish / total * 100, 1),
+        "headlines"   : headlines,
+    }
 
 
 # ── Verdict thresholds ────────────────────────────────────────
@@ -50,6 +100,8 @@ def generate_tip(ticker: str) -> dict:
 
     indicators = pred["indicators"]
     sentiment  = pred["sentiment"]
+    sentiment  = _analyze_sentiment(ticker)   # ← ADD THIS LINE
+    pred["sentiment"] = sentiment  
     signal     = pred["signal"]
     confidence = pred["confidence"]
     probs      = pred["probabilities"]
