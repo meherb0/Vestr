@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { portfolioService, watchlistService, screenerService, stockService, alertsService } from '../services/api'
 import { WatchlistItem, ScreenerResult } from '../types'
+import MarketStatus from '../components/MarketStatus'
 
 const VERDICT_COLORS: Record<string, string> = {
   'STRONG BUY':'#22c55e','BUY':'#86efac','WATCH':'#eab308','SELL':'#ef4444','STRONG SELL':'#ef4444',
@@ -187,7 +188,7 @@ export default function Dashboard() {
           </button>
 
           <div style={{ flex:1 }} />
-
+          <MarketStatus />
           <span style={{ fontSize:11,color:'#94a3b8',fontFamily:'monospace',letterSpacing:'0.08em' }}>
             {time.toLocaleTimeString('en-US',{hour12:false})}
           </span>

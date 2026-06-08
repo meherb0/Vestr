@@ -45,3 +45,19 @@ body {
 .verdict-bg-watch       { background-color: rgba(234, 179, 8, 0.1);   border: 1px solid rgba(234, 179, 8, 0.3);  }
 .verdict-bg-sell        { background-color: rgba(249, 115, 22, 0.1);  border: 1px solid rgba(249, 115, 22, 0.3); }
 .verdict-bg-strong-sell { background-color: rgba(239, 68, 68, 0.1);   border: 1px solid rgba(239, 68, 68, 0.3);  }
+
+/* Vestr logo — line springs up like a stock ticking on hover */
+svg:has(path[d^="M6 19"]) path[d^="M6 19"] {
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.35s ease;
+  transform-origin: 50% 60%;
+}
+svg:has(path[d^="M6 19"]):hover path[d^="M6 19"] {
+  transform: translateY(-3px) scaleY(1.12);
+  filter: drop-shadow(0 2px 4px rgba(99,102,241,0.7));
+}
+svg:has(path[d^="M6 19"]) rect {
+  transition: stroke-opacity 0.35s ease;
+}
+svg:has(path[d^="M6 19"]):hover rect {
+  stroke-opacity: 0.55;
+}
