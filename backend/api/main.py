@@ -16,10 +16,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title       = "Vestr API",
-    description = "Quantitative investment intelligence platform",
-    version     = "1.0.0",
-    lifespan    = lifespan,
+    title           = "Vestr API",
+    description     = "Quantitative investment intelligence platform",
+    version         = "1.0.0",
+    lifespan        = lifespan,
+    redirect_slashes = False,
 )
 
 ALLOWED_ORIGINS = os.getenv(

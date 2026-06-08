@@ -1,270 +1,231 @@
-import pandas as pd
-import numpy as np
-from backend.data.database import SessionLocal, init_db
-from backend.data.fetcher import get_prices, fetch_and_store
-from backend.indicators.indicators import compute_all
-from backend.model.train import engineer_features, FEATURE_COLUMNS, MODEL_PATH, SCALER_PATH
 import pickle
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+MODEL_PATH  = Path(__file__).parent.parent / 'model' / 'vestr_model.pkl'
+SCALER_PATH = Path(__file__).parent.parent / 'model' / 'vestr_scaler.pkl'
+
+FEATURE_COLS = [
+    'rsi','macd_line','signal_line','sma_10','sma_50',
+    'bb_upper','bb_lower','bb_bandwidth','obv',
+    'close_norm','volume_norm',
+]
 
 
-def load_model():
-    with open(MODEL_PATH,  "rb") as f:
-        model  = pickle.load(f)
-    with open(SCALER_PATH, "rb") as f:
-        scaler = pickle.load(f)
-    return model, scaler
+def _fetch_data(ticker: str) -> pd.DataFrame:
+    import yfinance as yf
+    df = yf.Ticker(ticker).history(period='5y')
+    if df.empty:
+        raise ValueError(f"No data found for {ticker}")
+    return df[['Open','High','Low','Close','Volume']].copy().dropna()
+
+
+def _compute_features(df: pd.DataFrame) -> pd.DataFrame:
+    df    = df.copy()
+    close = df['Close']
+    vol   = df['Volume']
+
+    delta    = close.diff()
+    gain     = delta.clip(lower=0)
+    loss     = -delta.clip(upper=0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs       = avg_gain / avg_loss.replace(0, np.nan)
+    df['rsi'] = 100 - (100 / (1 + rs))
+
+    ema12             = close.ewm(span=12, adjust=False).mean()
+    ema26             = close.ewm(span=26, adjust=False).mean()
+    df['macd_line']   = ema12 - ema26
+    df['signal_line'] = df['macd_line'].ewm(span=9, adjust=False).mean()
+
+    df['sma_10'] = close.rolling(10).mean()
+    df['sma_50'] = close.rolling(50).mean()
+
+    sma_20             = close.rolling(20).mean()
+    std_20             = close.rolling(20).std()
+    df['bb_upper']     = sma_20 + 2 * std_20
+    df['bb_lower']     = sma_20 - 2 * std_20
+    df['bb_bandwidth'] = (df['bb_upper'] - df['bb_lower']) / sma_20.replace(0, np.nan)
+
+    df['obv']         = (np.sign(close.diff()) * vol).fillna(0).cumsum()
+    df['close_norm']  = close / close.rolling(50).mean()
+    df['volume_norm'] = vol / vol.rolling(20).mean()
+    df['close']       = close
+
+    return df.dropna()
 
 
 def run_backtest(
-    ticker:          str,
-    starting_cash:   float = 10000.0,
-    min_confidence:  float = 0.45,
-    forward_days:    int   = 5,
+    ticker         : str,
+    starting_cash  : float = 10000.0,
+    min_confidence : float = 0.40,
+    stop_loss_pct  : float = 0.15,
+    cooldown_days  : int   = 20,
 ) -> dict:
     ticker = ticker.upper().strip()
 
-    model, scaler = load_model()
-    init_db()
-    db = SessionLocal()
+    try:
+        with open(MODEL_PATH, 'rb') as f:
+            model = pickle.load(f)
+        with open(SCALER_PATH, 'rb') as f:
+            scaler = pickle.load(f)
+    except Exception as e:
+        return _error_result(ticker, f"Model not loaded: {e}")
 
     try:
-        fetch_and_store(ticker, db, period_years=5)
-        prices = get_prices(ticker, db)
-    finally:
-        db.close()
+        df = _fetch_data(ticker)
+    except Exception as e:
+        return _error_result(ticker, str(e))
 
-    if prices.empty or len(prices) < 100:
-        return _error_result(ticker, "Not enough data to backtest.")
+    df = _compute_features(df)
 
-    df = compute_all(prices)
-    df = engineer_features(df)
-    df = df.dropna(subset=FEATURE_COLUMNS)
+    if len(df) < 100:
+        return _error_result(ticker, "Not enough historical data.")
 
-    cash              = starting_cash
-    shares            = 0
-    holding           = False
-    days_held         = 0
-    entry_price       = 0.0
-    cooldown          = 0
-    trades            = []
-    portfolio_history = []
+    cash        = starting_cash
+    shares      = 0.0
+    holding     = False
+    days_held   = 0
+    entry_price = 0.0
+    cooldown    = 0
+    trades      = []
+    port_values = []
 
     for i in range(len(df)):
         row   = df.iloc[i]
-        date  = df.index[i]
-        close = row["close"]
+        close = float(row['close'])
 
-        portfolio_value = cash + (shares * close)
-        portfolio_history.append({
-            "date"            : str(date),
-            "portfolio_value" : round(portfolio_value, 2),
-            "close"           : round(close, 2),
-            "holding"         : holding,
-        })
+        port_val = cash + shares * close
+        port_values.append(port_val)
 
-        if i >= len(df) - forward_days:
+        if i >= len(df) - 5:
             continue
 
-        features   = df[FEATURE_COLUMNS].iloc[i].values.reshape(1, -1)
-        feat_df    = pd.DataFrame(features, columns=FEATURE_COLUMNS)
-        scaled     = scaler.transform(feat_df)
-        proba      = model.predict_proba(scaled)[0]
-        signal     = model.predict(scaled)[0]
-        confidence = max(proba)
+        try:
+            X      = np.array([[row[f] for f in FEATURE_COLS]])
+            X_sc   = scaler.transform(X)
+            proba  = model.predict_proba(X_sc)[0]
+            signal = model.predict(X_sc)[0]
+            conf   = float(max(proba))
+        except Exception:
+            continue
 
-        # ── Stop loss — always runs before confidence check ──
-        if holding and close < entry_price * 0.85:
-            sell_value = shares * close
-            profit     = sell_value - (shares * entry_price)
-            profit_pct = (close - entry_price) / entry_price * 100
-
+        if holding and close < entry_price * (1 - stop_loss_pct):
+            pnl = (close - entry_price) / entry_price * 100
             trades.append({
-                "type"       : "SELL (stop loss)",
-                "date"       : str(date),
-                "price"      : round(close, 2),
-                "shares"     : round(shares, 4),
-                "value"      : round(sell_value, 2),
-                "profit"     : round(profit, 2),
-                "profit_pct" : round(profit_pct, 2),
-                "confidence" : 0.0,
-                "days_held"  : days_held,
+                'type'      : 'SELL (stop loss)',
+                'price'     : round(close, 2),
+                'profit_pct': round(pnl, 2),
+                'profit'    : round((close - entry_price) * shares, 2),
             })
-
-            cash     = sell_value
+            cash     = shares * close
             shares   = 0.0
             holding  = False
-            cooldown = 20  # wait 20 days before buying again after stop loss
-            print(f"[Vestr] Stop loss triggered on {ticker} at ${close:.2f}")
+            cooldown = cooldown_days
 
-        # ── Cooldown countdown ──
         if cooldown > 0:
             cooldown -= 1
 
-        # ── Skip low confidence signals ──
-        if confidence < min_confidence:
-            if holding:
-                days_held += 1
+        if conf < min_confidence:
+            if holding: days_held += 1
             continue
 
-        # ── BUY logic ──
-        if signal == 2 and not holding and cooldown == 0:
+        if signal == 'BUY' and not holding and cooldown == 0:
             shares      = cash / close
             cash        = 0.0
             holding     = True
-            days_held   = 0
             entry_price = close
+            days_held   = 0
+            trades.append({'type':'BUY','price':round(close,2),'confidence':round(conf,4)})
 
+        elif signal == 'SELL' and holding and days_held >= 5:
+            pnl = (close - entry_price) / entry_price * 100
             trades.append({
-                "type"       : "BUY",
-                "date"       : str(date),
-                "price"      : round(close, 2),
-                "shares"     : round(shares, 4),
-                "value"      : round(shares * close, 2),
-                "confidence" : round(confidence, 4),
+                'type'      : 'SELL',
+                'price'     : round(close, 2),
+                'profit_pct': round(pnl, 2),
+                'profit'    : round((close - entry_price) * shares, 2),
             })
-
-        # ── SELL logic ──
-        elif signal == 0 and holding and days_held >= forward_days:
-            sell_value = shares * close
-            profit     = sell_value - (shares * entry_price)
-            profit_pct = (close - entry_price) / entry_price * 100
-
-            trades.append({
-                "type"       : "SELL",
-                "date"       : str(date),
-                "price"      : round(close, 2),
-                "shares"     : round(shares, 4),
-                "value"      : round(sell_value, 2),
-                "profit"     : round(profit, 2),
-                "profit_pct" : round(profit_pct, 2),
-                "confidence" : round(confidence, 4),
-                "days_held"  : days_held,
-            })
-
-            cash    = sell_value
+            cash    = shares * close
             shares  = 0.0
             holding = False
 
         if holding:
             days_held += 1
 
-    # ── Close open position at end ──
     if holding and shares > 0:
-        final_price = df["close"].iloc[-1]
-        sell_value  = shares * final_price
-        profit      = sell_value - (shares * entry_price)
-        profit_pct  = (final_price - entry_price) / entry_price * 100
-
+        final = float(df['close'].iloc[-1])
+        pnl   = (final - entry_price) / entry_price * 100
         trades.append({
-            "type"       : "SELL (end)",
-            "date"       : str(df.index[-1]),
-            "price"      : round(final_price, 2),
-            "shares"     : round(shares, 4),
-            "value"      : round(sell_value, 2),
-            "profit"     : round(profit, 2),
-            "profit_pct" : round(profit_pct, 2),
-            "confidence" : 0.0,
-            "days_held"  : days_held,
+            'type'      : 'SELL (end)',
+            'price'     : round(final, 2),
+            'profit_pct': round(pnl, 2),
+            'profit'    : round((final - entry_price) * shares, 2),
         })
-        cash = sell_value
+        cash = shares * final
 
-    # ── Performance metrics ──
-    final_value     = cash
-    total_return    = (final_value - starting_cash) / starting_cash * 100
-    first_close     = df["close"].iloc[0]
-    last_close      = df["close"].iloc[-1]
-    buy_hold_return = (last_close - first_close) / first_close * 100
-    sell_trades     = [t for t in trades if "profit" in t]
-    winning         = [t for t in sell_trades if t["profit"] > 0]
-    win_rate        = len(winning) / len(sell_trades) * 100 if sell_trades else 0.0
-    values          = [p["portfolio_value"] for p in portfolio_history]
-    max_drawdown    = _calculate_max_drawdown(values)
-    returns         = pd.Series(values).pct_change().dropna()
-    sharpe          = _calculate_sharpe(returns)
-    avg_profit_pct  = (
-        sum(t["profit_pct"] for t in sell_trades) / len(sell_trades)
-        if sell_trades else 0.0
-    )
+    final_val    = cash
+    strategy_ret = (final_val - starting_cash) / starting_cash * 100
+    first_close  = float(df['close'].iloc[0])
+    last_close   = float(df['close'].iloc[-1])
+    buyhold_ret  = (last_close - first_close) / first_close * 100
+    sell_trades  = [t for t in trades if 'profit' in t]
+    winning      = [t for t in sell_trades if t['profit'] > 0]
+    win_rate     = len(winning) / len(sell_trades) if sell_trades else 0.0
+    max_dd       = _max_drawdown(port_values)
+    rets         = pd.Series(port_values).pct_change().dropna()
+    sharpe       = _sharpe(rets)
 
     return {
-        "ticker"            : ticker,
-        "starting_cash"     : starting_cash,
-        "final_value"       : round(final_value, 2),
-        "total_return_pct"  : round(total_return, 2),
-        "buy_hold_return"   : round(buy_hold_return, 2),
-        "total_trades"      : len(sell_trades),
-        "winning_trades"    : len(winning),
-        "win_rate"          : round(win_rate, 2),
-        "max_drawdown"      : round(max_drawdown, 2),
-        "sharpe_ratio"      : round(sharpe, 3),
-        "avg_profit_pct"    : round(avg_profit_pct, 2),
-        "trades"            : trades,
-        "portfolio_history" : portfolio_history,
-        "error"             : None,
+        'ticker'          : ticker,
+        'starting_cash'   : starting_cash,
+        'final_value'     : round(final_val, 2),
+        'strategy_return' : round(strategy_ret, 2),
+        'total_return'    : round(strategy_ret, 2),
+        'buyhold_return'  : round(buyhold_ret, 2),
+        'buy_hold_return' : round(buyhold_ret, 2),
+        'num_trades'      : len(sell_trades),
+        'total_trades'    : len(sell_trades),
+        'win_rate'        : round(win_rate, 4),
+        'max_drawdown'    : round(max_dd, 2),
+        'sharpe_ratio'    : round(sharpe, 3),
+        'trades'          : trades,
+        'error'           : None,
     }
 
 
-def _calculate_max_drawdown(values: list) -> float:
+def _max_drawdown(values: list) -> float:
+    if not values: return 0.0
     peak   = values[0]
     max_dd = 0.0
     for v in values:
-        if v > peak:
-            peak = v
-        drawdown = (v - peak) / peak * 100
-        if drawdown < max_dd:
-            max_dd = drawdown
+        if v > peak: peak = v
+        dd = (v - peak) / peak * 100
+        if dd < max_dd: max_dd = dd
     return max_dd
 
 
-def _calculate_sharpe(returns: pd.Series, risk_free_rate: float = 0.05) -> float:
-    if returns.std() == 0:
-        return 0.0
-    daily_rf = risk_free_rate / 252
-    excess   = returns.mean() - daily_rf
-    sharpe   = (excess / returns.std()) * np.sqrt(252)
-    return sharpe
+def _sharpe(returns: pd.Series, rf: float = 0.05) -> float:
+    if len(returns) == 0 or returns.std() == 0: return 0.0
+    excess = returns.mean() - rf / 252
+    return float((excess / returns.std()) * np.sqrt(252))
 
 
 def _error_result(ticker: str, message: str) -> dict:
     return {
-        "ticker"            : ticker,
-        "starting_cash"     : 0,
-        "final_value"       : 0,
-        "total_return_pct"  : 0,
-        "buy_hold_return"   : 0,
-        "total_trades"      : 0,
-        "winning_trades"    : 0,
-        "win_rate"          : 0,
-        "max_drawdown"      : 0,
-        "sharpe_ratio"      : 0,
-        "avg_profit_pct"    : 0,
-        "trades"            : [],
-        "portfolio_history" : [],
-        "error"             : message,
+        'ticker'          : ticker,
+        'starting_cash'   : 0,
+        'final_value'     : 0,
+        'strategy_return' : 0,
+        'total_return'    : 0,
+        'buyhold_return'  : 0,
+        'buy_hold_return' : 0,
+        'num_trades'      : 0,
+        'total_trades'    : 0,
+        'win_rate'        : 0,
+        'max_drawdown'    : 0,
+        'sharpe_ratio'    : 0,
+        'trades'          : [],
+        'error'           : message,
     }
-
-
-if __name__ == "__main__":
-    print("\n[Vestr] Running backtest for AAPL...\n")
-    result = run_backtest("AAPL", starting_cash=10000.0)
-
-    if result["error"]:
-        print(f"Error: {result['error']}")
-    else:
-        print(f"  Ticker:            {result['ticker']}")
-        print(f"  Starting Cash:     ${result['starting_cash']:,.2f}")
-        print(f"  Final Value:       ${result['final_value']:,.2f}")
-        print(f"  Total Return:      {result['total_return_pct']:+.2f}%")
-        print(f"  Buy & Hold Return: {result['buy_hold_return']:+.2f}%")
-        print(f"  Total Trades:      {result['total_trades']}")
-        print(f"  Win Rate:          {result['win_rate']:.1f}%")
-        print(f"  Max Drawdown:      {result['max_drawdown']:.2f}%")
-        print(f"  Sharpe Ratio:      {result['sharpe_ratio']:.3f}")
-        print(f"  Avg Profit/Trade:  {result['avg_profit_pct']:+.2f}%")
-        print(f"\n  Last 5 trades:")
-        for t in result["trades"][-5:]:
-            if "profit" in t:
-                print(f"    {t['type']:18} {t['date']}  ${t['price']}  "
-                      f"P&L: {t['profit_pct']:+.2f}%")
-            else:
-                print(f"    {t['type']:18} {t['date']}  ${t['price']}")
