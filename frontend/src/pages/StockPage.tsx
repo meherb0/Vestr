@@ -34,8 +34,8 @@ export default function StockPage() {
   const [chartData, setChartData]       = useState<any[]>([])
   const [chartLoading, setChartLoading] = useState(false)
   const [livePrice, setLivePrice]       = useState(0)
-  const [priceDir, setPriceDir] = useState<'up'|'down'|null>(null)
-  const [flashKey, setFlashKey] = useState(0)
+  const [priceDir, setPriceDir]         = useState<'up'|'down'|null>(null)
+  const [flashKey, setFlashKey]         = useState(0)
   const [lastUpdated, setLastUpdated]   = useState<Date | null>(null)
   const [inWatchlist, setInWatchlist]   = useState(false)
   const [watchlistId, setWatchlistId]   = useState<number | null>(null)
@@ -53,15 +53,11 @@ export default function StockPage() {
     setBacktestLoading(true)
 
     stockService.getTip(ticker)
-        .then((data: any) => {
-          const newPrice = data?.prediction?.indicators?.close || 0
-          setLivePrice(prev => {
-            if (newPrice > prev) setPriceDir('up')
-            else if (newPrice < prev) setPriceDir('down')
-            setFlashKey(k => k + 1)
-            return newPrice
-          })
-          setLastUpdated(new Date())
+      .then((data: any) => {
+        setAnalysis(data)
+        const p = data?.prediction?.indicators?.close || 0
+        setLivePrice(p)
+        setLastUpdated(new Date())
       })
       .catch(() => setError(`ERR: COULD NOT LOAD DATA FOR ${ticker}`))
       .finally(() => setLoading(false))
@@ -96,7 +92,12 @@ export default function StockPage() {
       stockService.getTip(ticker)
         .then((data: any) => {
           const newPrice = data?.prediction?.indicators?.close || 0
-          setLivePrice(newPrice)
+          setLivePrice(prev => {
+            if (newPrice > prev) setPriceDir('up')
+            else if (newPrice < prev) setPriceDir('down')
+            setFlashKey(k => k + 1)
+            return newPrice
+          })
           setLastUpdated(new Date())
           if (period === '1d') {
             stockService.getHistory(ticker, '1d')
@@ -187,7 +188,6 @@ export default function StockPage() {
   const bullishPct    = sentiment.bullish_pct  || 0
   const bearishPct    = sentiment.bearish_pct  || 0
   const newsScore     = sentiment.score        || 0
-  const newsSummary   = sentiment.summary      || ''
   const headlines     = sentiment.headlines    || []
   const rookieExpl    = analysis?.rookie_card?.verdict_explanation || ''
   const rookieReasons = (analysis?.rookie_card?.key_reasons || []) as string[]
@@ -499,10 +499,10 @@ export default function StockPage() {
                                 <div key={i} style={{ background:'#060d1f',border:`1px solid ${h.label==='Bullish'?'rgba(34,197,94,0.15)':h.label==='Bearish'?'rgba(239,68,68,0.15)':'rgba(59,130,246,0.07)'}`,borderRadius:3,padding:'12px 14px' }}>
                                   <div style={{ display:'flex',alignItems:'center',gap:8,marginBottom:6 }}>
                                     <span style={{ fontSize:9,fontFamily:'monospace',fontWeight:700,color:h.label==='Bullish'?'#4ade80':h.label==='Bearish'?'#f87171':'#64748b' }}>
-                                      {isRookie ? h.label==='Bullish'?'↑ GOOD NEWS':h.label==='Bearish'?'↓ BAD NEWS':'→ NEUTRAL' : h.label?.toUpperCase()}
+                                      {isRookie ? (h.label==='Bullish'?'↑ GOOD NEWS':h.label==='Bearish'?'↓ BAD NEWS':'→ NEUTRAL') : h.label?.toUpperCase()}
                                     </span>
                                     <span style={{ fontSize:9,color:'#334155',fontFamily:'monospace' }}>
-                                      {new Date(h.published_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}
+                                      {h.published_at ? new Date(h.published_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''}
                                     </span>
                                   </div>
                                   <a href={h.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:12,color:'#cbd5e1',fontFamily:'monospace',lineHeight:1.5,textDecoration:'none',display:'block',marginBottom:8 }}>
@@ -536,7 +536,7 @@ export default function StockPage() {
                             <div style={{ background:'#060d1f',border:'1px solid rgba(59,130,246,0.07)',borderRadius:3,padding:'24px',textAlign:'center' as const }}>
                               <div style={{ fontSize:12,color:'#475569',fontFamily:'monospace',marginBottom:6 }}>BACKTEST UNAVAILABLE FOR {ticker}</div>
                               <div style={{ fontSize:10,color:'#334155',fontFamily:'monospace' }}>
-                                Backtest requires historical data in the database. Run retrain.py to add more tickers.
+                                Backtest requires historical data. Try a major stock like AAPL or MSFT.
                               </div>
                             </div>
                           ) : (
