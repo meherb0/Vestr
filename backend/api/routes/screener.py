@@ -1,44 +1,45 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from backend.data.database import get_db
 from backend.data.models import User
-from backend.api.auth import get_current_user_optional
+from backend.api.auth import get_current_user, get_current_user_optional
 from backend.tips.generator import generate_tip
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 router = APIRouter(prefix="/api/screener", tags=["screener"])
 
-# Default universe of stocks we scan
-# Covers major sectors — expand this list later
 SCREENER_UNIVERSE = [
-    # Tech
-    "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMD", "INTC", "CRM",
+    # Mega cap tech
+    "AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","ORCL","ADBE",
+    "CRM","NOW","INTU","AMD","INTC","QCOM","TXN","ADI","AMAT","LRCX",
+    "KLAC","CSCO","IBM","NFLX","SNAP","SPOT","SHOP","PYPL","COIN","PLTR",
     # Finance
-    "JPM", "BAC", "GS", "V", "MA",
-    # Consumer
-    "AMZN", "TSLA", "WMT", "NKE", "MCD",
+    "JPM","BAC","GS","MS","WFC","C","AXP","SCHW","V","MA",
+    "BLK","SPGI","CME","ICE","CB","AON","PGR","TRV","MET","PRU",
     # Healthcare
-    "JNJ", "PFE", "UNH", "ABBV",
+    "UNH","JNJ","LLY","PFE","ABBV","MRK","TMO","ABT","DHR","BMY",
+    "ISRG","SYK","EW","BSX","ZTS","GILD","REGN","VRTX","AMGN","BIIB",
+    # Consumer
+    "WMT","HD","MCD","NKE","SBUX","TGT","COST","PG","KO","PEP",
+    "AMZN","DIS","CMCSA","F","GM","UBER","ABNB","DASH","LYFT","HOOD",
     # Energy
-    "XOM", "CVX",
-    # Other
-    "DIS", "NFLX", "UBER", "SHOP",
+    "XOM","CVX","COP","SLB","EOG","MPC","PSX","VLO","OXY","DVN",
+    # Industrial
+    "CAT","DE","UPS","RTX","GE","HON","BA","LMT","NOC","MMM",
+    "EMR","ETN","PH","ROK","SWK","IR","XYL","AME","FTV","ROP",
+    # Real estate / utilities
+    "NEE","DUK","SO","AMT","PLD","CCI","EQIX","PSA","EXR","AVB",
+    # Communication
+    "T","VZ","TMUS","CHTR","NFLX","DIS","PARA","WBD",
+    # Materials
+    "LIN","APD","ECL","SHW","DD","DOW","NEM","FCX","NUE","VMC",
+    # Other notable
+    "SNOW","CRWD","DDOG","NET","MDB","ZS","OKTA","TWLO","HUBS","TEAM",
 ]
 
-
 def _screen_single(ticker: str) -> dict | None:
-    """
-    Runs a full tip generation on one ticker.
-    Returns a simplified result dict or None if it fails.
-
-    We catch all exceptions here so one bad ticker
-    doesn't crash the entire screener run.
-    """
     try:
         tip = generate_tip(ticker)
         if tip["error"]:
             return None
-
         return {
             "ticker"     : ticker,
             "verdict"    : tip["verdict"],
@@ -57,62 +58,70 @@ def _screen_single(ticker: str) -> dict | None:
 
 @router.get("/")
 def run_screener(
-    current_user : User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user_optional),
 ):
-    """
-    Scans the entire stock universe and returns:
-        must_buy  → top 5 stocks with strongest BUY signals
-        must_sell → top 5 stocks with strongest SELL signals
-
-    Uses ThreadPoolExecutor to run tip generation in parallel
-    across all tickers — otherwise scanning 30 stocks one by one
-    would take several minutes.
-
-    Results are sorted by score:
-        must_buy  → highest score first
-        must_sell → lowest score first (most negative)
-    """
     results = []
-
-    # Run all tickers in parallel — 5 threads at a time
-    # More than 5 risks hitting rate limits on RSS feeds
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
             executor.submit(_screen_single, ticker): ticker
             for ticker in SCREENER_UNIVERSE
         }
-
         for future in as_completed(futures):
             result = future.result()
             if result is not None:
                 results.append(result)
 
     if not results:
-        raise HTTPException(
-            status_code = 503,
-            detail      = "Screener failed to fetch data. Try again shortly."
-        )
+        raise HTTPException(status_code=503, detail="Screener failed. Try again shortly.")
 
-    # Sort by score
     results.sort(key=lambda x: x["score"], reverse=True)
 
-    # Must buy → positive verdicts, sorted best first
-    must_buy = [
-        r for r in results
-        if r["verdict"] in ("STRONG BUY", "BUY")
-    ][:5]
-
-    # Must sell → negative verdicts, sorted worst first
-    must_sell = [
-        r for r in reversed(results)
-        if r["verdict"] in ("STRONG SELL", "SELL")
-    ][:5]
+    must_buy = [r for r in results if r["verdict"] in ("STRONG BUY","BUY")][:5]
+    must_sell = [r for r in reversed(results) if r["verdict"] in ("STRONG SELL","SELL")][:5]
 
     return {
-        "must_buy"       : must_buy,
-        "must_sell"      : must_sell,
-        "scanned"        : len(results),
-        "universe_size"  : len(SCREENER_UNIVERSE),
+        "must_buy"      : must_buy,
+        "must_sell"     : must_sell,
+        "scanned"       : len(results),
+        "universe_size" : len(SCREENER_UNIVERSE),
+    }
+
+
+@router.get("/watchlist")
+def scan_watchlist(
+    current_user: User = Depends(get_current_user),
+):
+    """Scans only the user's watchlist tickers — fast and personalised."""
+    from backend.data.database import SessionLocal
+    from backend.data.models import WatchlistItem
+
+    db    = SessionLocal()
+    items = db.query(WatchlistItem).filter(WatchlistItem.user_id == current_user.id).all()
+    db.close()
+
+    if not items:
+        return {"must_buy": [], "must_sell": [], "scanned": 0, "universe_size": 0}
+
+    tickers = [i.ticker for i in items]
+    results = []
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(_screen_single, t): t for t in tickers}
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                results.append(result)
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+
+    must_buy  = [r for r in results if r["verdict"] in ("STRONG BUY","BUY")]
+    must_sell = [r for r in reversed(results) if r["verdict"] in ("STRONG SELL","SELL")]
+
+    return {
+        "must_buy"      : must_buy,
+        "must_sell"     : must_sell,
+        "scanned"       : len(results),
+        "universe_size" : len(tickers),
     }
 
 
@@ -121,26 +130,10 @@ def quick_screen(
     ticker       : str,
     current_user : User = Depends(get_current_user_optional),
 ):
-    """
-    Runs the screener on a single ticker.
-    Used when the frontend needs a fast signal
-    for a watchlist or portfolio item without
-    running the full tip pipeline.
-    """
     ticker = ticker.upper().strip()
-
     if not ticker.isalpha() or len(ticker) > 5:
-        raise HTTPException(
-            status_code = 400,
-            detail      = "Invalid ticker symbol."
-        )
-
+        raise HTTPException(status_code=400, detail="Invalid ticker symbol.")
     result = _screen_single(ticker)
-
     if result is None:
-        raise HTTPException(
-            status_code = 404,
-            detail      = f"Could not screen {ticker}."
-        )
-
+        raise HTTPException(status_code=404, detail=f"Could not screen {ticker}.")
     return result

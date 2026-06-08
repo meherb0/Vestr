@@ -79,7 +79,8 @@ export const portfolioService = {
 }
 
 export const screenerService = {
-  run : () => api.get('/screener/').then(r => r.data),
+  run          : () => api.get('/screener/').then(r => r.data),
+  scanWatchlist: () => api.get('/screener/watchlist').then(r => r.data),
 }
 
 export const alertsService = {

@@ -26,25 +26,20 @@ export default function Dashboard() {
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [time, setTime]                 = useState(new Date())
 
-  // Portfolio
   const [portfolioPositions, setPortfolioPositions] = useState<any[]>([])
   const [portfolioPrices, setPortfolioPrices]       = useState<Record<string, number>>({})
   const [portfolioLoading, setPortfolioLoading]     = useState(true)
 
-  // Watchlist
   const [watchlist, setWatchlist]           = useState<WatchlistItem[]>([])
   const [watchSignals, setWatchSignals]     = useState<Record<string, any>>({})
   const [watchLoading, setWatchLoading]     = useState<Record<string, boolean>>({})
   const [watchlistLoading, setWatchlistLoading] = useState(true)
 
-  // Screener
-  const [screener, setScreener]           = useState<{ must_buy: ScreenerResult[]; must_sell: ScreenerResult[] } | null>(null)
+  const [screener, setScreener]               = useState<{ must_buy: ScreenerResult[]; must_sell: ScreenerResult[]; scanned: number; universe_size: number } | null>(null)
   const [screenerLoading, setScreenerLoading] = useState(false)
-  const [riskFilter, setRiskFilter]       = useState('All')
-  const [confFilter, setConfFilter]       = useState(0)
+  const [riskFilter, setRiskFilter]           = useState('All')
+  const [confFilter, setConfFilter]           = useState(0)
 
-  // Alerts
-  const [alerts, setAlerts]               = useState<any[]>([])
   const [triggeredAlerts, setTriggeredAlerts] = useState<any[]>([])
   const [dismissedAlerts, setDismissedAlerts] = useState<number[]>([])
 
@@ -63,12 +58,10 @@ export default function Dashboard() {
     return () => document.removeEventListener('mousedown', handle)
   }, [])
 
-  // Load alerts
   useEffect(() => {
-    alertsService.getAll().then(setAlerts).catch(() => {})
+    alertsService.getAll().catch(() => {})
   }, [])
 
-  // Portfolio — live P&L
   useEffect(() => {
     portfolioService.getAll()
       .then((positions: any[]) => {
@@ -83,7 +76,6 @@ export default function Dashboard() {
       .catch(() => setPortfolioLoading(false))
   }, [])
 
-  // Watchlist + 30s refresh
   useEffect(() => {
     const fetchPrices = (items: any[]) => {
       items.forEach((item: any) => {
@@ -92,15 +84,6 @@ export default function Dashboard() {
           .then(s => {
             setWatchSignals(prev => ({ ...prev, [item.ticker]: s }))
             setWatchLoading(prev => ({ ...prev, [item.ticker]: false }))
-            // Check alerts against new prices
-            setAlerts(currentAlerts => {
-              const triggered = currentAlerts.filter(a => {
-                if (a.ticker !== item.ticker) return false
-                return a.direction === 'above' ? s.close >= a.target_price : s.close <= a.target_price
-              })
-              if (triggered.length) setTriggeredAlerts(prev => [...prev.filter(t => t.ticker !== item.ticker), ...triggered])
-              return currentAlerts
-            })
           })
           .catch(() => setWatchLoading(prev => ({ ...prev, [item.ticker]: false })))
       })
@@ -123,6 +106,12 @@ export default function Dashboard() {
     catch {} finally { setScreenerLoading(false) }
   }, [])
 
+  const runWatchlistScan = useCallback(async () => {
+    setScreenerLoading(true)
+    try { const r = await screenerService.scanWatchlist(); setScreener(r) }
+    catch {} finally { setScreenerLoading(false) }
+  }, [])
+
   const handleLogout = () => { logout(); navigate('/') }
 
   const greeting = () => {
@@ -132,14 +121,12 @@ export default function Dashboard() {
     return 'GOOD EVENING'
   }
 
-  // Live P&L calculation
   const liveTotalValue = portfolioPositions.reduce((sum, p) => sum + (portfolioPrices[p.ticker] || p.avg_buy_price) * p.shares, 0)
   const liveTotalCost  = portfolioPositions.reduce((sum, p) => sum + p.avg_buy_price * p.shares, 0)
   const livePnl        = liveTotalValue - liveTotalCost
   const livePnlPct     = liveTotalCost > 0 ? (livePnl / liveTotalCost) * 100 : 0
   const pnlColor       = livePnl >= 0 ? '#22c55e' : '#ef4444'
 
-  // Screener filters
   const filteredBuy  = (screener?.must_buy || []).filter(s => {
     if (riskFilter !== 'All' && s.risk_level !== riskFilter) return false
     if (s.confidence < confFilter / 100) return false
@@ -190,6 +177,7 @@ export default function Dashboard() {
             </svg>
             <span style={{ fontSize:13,fontWeight:700,letterSpacing:1,textTransform:'uppercase' as const }}>Vestr</span>
           </div>
+
           <button onClick={() => navigate('/search')} style={{ background:'#0a1628',border:'1px solid rgba(59,130,246,0.2)',borderRadius:3,padding:'7px 16px',cursor:'pointer',display:'flex',alignItems:'center',gap:8,transition:'border-color 0.2s' }}
             onMouseEnter={e => e.currentTarget.style.borderColor='rgba(99,102,241,0.4)'}
             onMouseLeave={e => e.currentTarget.style.borderColor='rgba(59,130,246,0.2)'}
@@ -197,10 +185,13 @@ export default function Dashboard() {
             <span style={{ fontSize:11,color:'rgba(99,102,241,0.7)',fontFamily:'monospace' }}>▸</span>
             <span style={{ fontSize:11,color:'#94a3b8',fontFamily:'monospace',letterSpacing:'0.05em' }}>SEARCH STOCKS</span>
           </button>
+
           <div style={{ flex:1 }} />
+
           <span style={{ fontSize:11,color:'#94a3b8',fontFamily:'monospace',letterSpacing:'0.08em' }}>
             {time.toLocaleTimeString('en-US',{hour12:false})}
           </span>
+
           <span style={{
             fontSize:9,fontFamily:'monospace',letterSpacing:'0.08em',
             color:user?.mode==='pro'?'#818cf8':'#4ade80',
@@ -210,6 +201,7 @@ export default function Dashboard() {
           }}>
             {user?.mode?.toUpperCase()||'ROOKIE'}
           </span>
+
           <div ref={userMenuRef} style={{ position:'relative' }}>
             <button onClick={() => setShowUserMenu(v => !v)} style={{ background:showUserMenu?'rgba(59,130,246,0.08)':'transparent',border:'1px solid rgba(59,130,246,0.22)',color:'#cbd5e1',fontSize:11,fontFamily:'monospace',padding:'5px 12px',borderRadius:2,cursor:'pointer',letterSpacing:'0.06em',display:'flex',alignItems:'center',gap:6,transition:'all 0.2s' }}>
               {user?.username?.toUpperCase()}
@@ -233,14 +225,14 @@ export default function Dashboard() {
           </div>
         </nav>
 
-        {/* Price alert banner */}
+        {/* Alert banners */}
         {undismissedAlerts.map(a => (
           <div key={a.id} style={{ background:'rgba(234,179,8,0.08)',borderBottom:'1px solid rgba(234,179,8,0.25)',padding:'10px 32px',display:'flex',alignItems:'center',justifyContent:'space-between',animation:'alertSlide 0.3s ease' }}>
             <div style={{ display:'flex',alignItems:'center',gap:10 }}>
               <span style={{ fontSize:12 }}>⚡</span>
               <span style={{ fontSize:11,fontFamily:'monospace',color:'#eab308',fontWeight:700 }}>PRICE ALERT:</span>
               <span style={{ fontSize:11,fontFamily:'monospace',color:'#e2e8f0' }}>
-                {a.ticker} is now ${(watchSignals[a.ticker]?.close||0).toFixed(2)} — your target was ${a.target_price} ({a.direction})
+                {a.ticker} hit your target of ${a.target_price} ({a.direction})
                 {a.note && ` — ${a.note}`}
               </span>
             </div>
@@ -250,7 +242,6 @@ export default function Dashboard() {
 
         <div style={{ maxWidth:1320,margin:'0 auto',padding:'32px' }}>
 
-          {/* Greeting */}
           <div style={{ marginBottom:28,animation:'fadeUp 0.5s ease 0.1s both' }}>
             <div style={{ fontSize:10,color:'rgba(148,163,184,0.8)',fontFamily:'monospace',letterSpacing:'0.12em',marginBottom:6 }}>
               SEC. 01 // COMMAND CENTER
@@ -263,7 +254,7 @@ export default function Dashboard() {
           {/* Stats row */}
           <div style={{ display:'grid',gridTemplateColumns:'280px 1fr 1fr',gap:14,marginBottom:20,animation:'fadeUp 0.5s ease 0.15s both' }}>
 
-            {/* Portfolio — live P&L */}
+            {/* Portfolio */}
             <div style={{ ...card,padding:20 }}>
               <div style={{ position:'absolute',top:0,left:0,right:0,height:2,background:'linear-gradient(90deg,#6366f1 0%,transparent 60%)' }} />
               <div style={{ fontSize:9,color:'rgba(148,163,184,0.85)',fontFamily:'monospace',letterSpacing:'0.1em',marginBottom:10 }}>MODULE // PORTFOLIO</div>
@@ -301,15 +292,20 @@ export default function Dashboard() {
               <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10 }}>
                 <div style={{ fontSize:9,color:'rgba(148,163,184,0.85)',fontFamily:'monospace',letterSpacing:'0.1em' }}>MODULE // MUST BUY</div>
                 {!screener && (
-                  <button onClick={runScreener} disabled={screenerLoading} style={{ fontSize:9,color:'#4ade80',fontFamily:'monospace',background:'rgba(34,197,94,0.08)',border:'1px solid rgba(34,197,94,0.3)',padding:'3px 8px',borderRadius:2,cursor:'pointer' }}>
-                    {screenerLoading?'SCANNING...':'RUN SCAN →'}
-                  </button>
+                  <div style={{ display:'flex',gap:6 }}>
+                    <button onClick={runScreener} disabled={screenerLoading} style={{ fontSize:9,color:'#4ade80',fontFamily:'monospace',background:'rgba(34,197,94,0.08)',border:'1px solid rgba(34,197,94,0.3)',padding:'3px 8px',borderRadius:2,cursor:'pointer' }}>
+                      {screenerLoading?'SCANNING...':'FULL SCAN →'}
+                    </button>
+                    <button onClick={runWatchlistScan} disabled={screenerLoading} style={{ fontSize:9,color:'#818cf8',fontFamily:'monospace',background:'rgba(99,102,241,0.08)',border:'1px solid rgba(99,102,241,0.3)',padding:'3px 8px',borderRadius:2,cursor:'pointer' }}>
+                      WATCHLIST
+                    </button>
+                  </div>
                 )}
               </div>
               {screenerLoading ? (
                 <div>
-                  <div style={{ fontSize:11,color:'#94a3b8',fontFamily:'monospace' }}>SCANNING 30+ STOCKS...</div>
-                  <div style={{ fontSize:9,color:'#64748b',fontFamily:'monospace',marginTop:4 }}>THIS MAY TAKE 1-2 MINUTES</div>
+                  <div style={{ fontSize:11,color:'#94a3b8',fontFamily:'monospace' }}>SCANNING STOCKS...</div>
+                  <div style={{ fontSize:9,color:'#64748b',fontFamily:'monospace',marginTop:4 }}>FULL SCAN MAY TAKE 3-5 MINUTES</div>
                 </div>
               ) : screener ? (
                 <div style={{ display:'flex',flexDirection:'column' as const,gap:8 }}>
@@ -325,10 +321,10 @@ export default function Dashboard() {
                       </div>
                     </div>
                   ))}
-                  {filteredBuy.length === 0 && <div style={{ fontSize:11,color:'#94a3b8',fontFamily:'monospace' }}>NO RESULTS MATCH FILTERS</div>}
+                  {filteredBuy.length === 0 && <div style={{ fontSize:11,color:'#94a3b8',fontFamily:'monospace' }}>NO BUY SIGNALS FOUND</div>}
                 </div>
               ) : (
-                <div style={{ fontSize:12,color:'#94a3b8',fontFamily:'monospace' }}>SCAN NOT YET RUN</div>
+                <div style={{ fontSize:11,color:'#94a3b8',fontFamily:'monospace' }}>RUN SCAN TO SEE SIGNALS</div>
               )}
             </div>
 
@@ -352,20 +348,19 @@ export default function Dashboard() {
                       </div>
                     </div>
                   ))}
-                  {filteredSell.length === 0 && <div style={{ fontSize:11,color:'#94a3b8',fontFamily:'monospace' }}>NO RESULTS MATCH FILTERS</div>}
+                  {filteredSell.length === 0 && <div style={{ fontSize:11,color:'#94a3b8',fontFamily:'monospace' }}>NO SELL SIGNALS FOUND</div>}
                 </div>
               ) : (
-                <div style={{ fontSize:12,color:'#94a3b8',fontFamily:'monospace' }}>SCAN NOT YET RUN</div>
+                <div style={{ fontSize:11,color:'#94a3b8',fontFamily:'monospace' }}>RUN SCAN TO SEE SIGNALS</div>
               )}
             </div>
           </div>
 
-          {/* Screener filters — shows after scan */}
+          {/* Screener filters */}
           {screener && (
             <div style={{ ...card,padding:'12px 16px',marginBottom:14,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap' as const,animation:'fadeUp 0.3s ease both' }}>
               <div style={{ position:'absolute',top:0,left:0,right:0,height:2,background:'linear-gradient(90deg,#6366f1 0%,transparent 60%)' }} />
               <div style={{ fontSize:9,color:'rgba(148,163,184,0.8)',fontFamily:'monospace',letterSpacing:'0.08em',marginRight:4 }}>FILTERS:</div>
-              {/* Risk filter */}
               <div style={{ display:'flex',alignItems:'center',gap:4 }}>
                 <span style={{ fontSize:9,color:'#94a3b8',fontFamily:'monospace' }}>RISK:</span>
                 {['All','Low','Medium','High'].map(r => (
@@ -377,7 +372,6 @@ export default function Dashboard() {
                   }}>{r.toUpperCase()}</button>
                 ))}
               </div>
-              {/* Confidence filter */}
               <div style={{ display:'flex',alignItems:'center',gap:4 }}>
                 <span style={{ fontSize:9,color:'#94a3b8',fontFamily:'monospace' }}>MIN CONF:</span>
                 {[0,30,50,70].map(c => (
@@ -389,8 +383,11 @@ export default function Dashboard() {
                   }}>{c===0?'ANY':`${c}%+`}</button>
                 ))}
               </div>
-              <button onClick={() => { setScreener(null); setRiskFilter('All'); setConfFilter(0) }} style={{ marginLeft:'auto',fontSize:9,color:'#64748b',fontFamily:'monospace',background:'transparent',border:'none',cursor:'pointer' }}>
-                RESET SCAN ×
+              <div style={{ fontSize:9,color:'#475569',fontFamily:'monospace',marginLeft:'auto' }}>
+                {screener.scanned} STOCKS SCANNED
+              </div>
+              <button onClick={() => { setScreener(null); setRiskFilter('All'); setConfFilter(0) }} style={{ fontSize:9,color:'#64748b',fontFamily:'monospace',background:'transparent',border:'none',cursor:'pointer' }}>
+                RESET ×
               </button>
             </div>
           )}
@@ -406,6 +403,7 @@ export default function Dashboard() {
                 ADD STOCKS →
               </button>
             </div>
+
             {watchlistLoading ? (
               <div style={{ padding:20,fontSize:12,color:'#94a3b8',fontFamily:'monospace' }}>LOADING WATCHLIST...</div>
             ) : watchlist.length === 0 ? (
