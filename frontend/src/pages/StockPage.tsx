@@ -34,6 +34,8 @@ export default function StockPage() {
   const [chartData, setChartData]       = useState<any[]>([])
   const [chartLoading, setChartLoading] = useState(false)
   const [livePrice, setLivePrice]       = useState(0)
+  const [priceDir, setPriceDir] = useState<'up'|'down'|null>(null)
+  const [flashKey, setFlashKey] = useState(0)
   const [lastUpdated, setLastUpdated]   = useState<Date | null>(null)
   const [inWatchlist, setInWatchlist]   = useState(false)
   const [watchlistId, setWatchlistId]   = useState<number | null>(null)
@@ -51,11 +53,15 @@ export default function StockPage() {
     setBacktestLoading(true)
 
     stockService.getTip(ticker)
-      .then((data: any) => {
-        setAnalysis(data)
-        const p = data?.prediction?.indicators?.close || 0
-        setLivePrice(p)
-        setLastUpdated(new Date())
+        .then((data: any) => {
+          const newPrice = data?.prediction?.indicators?.close || 0
+          setLivePrice(prev => {
+            if (newPrice > prev) setPriceDir('up')
+            else if (newPrice < prev) setPriceDir('down')
+            setFlashKey(k => k + 1)
+            return newPrice
+          })
+          setLastUpdated(new Date())
       })
       .catch(() => setError(`ERR: COULD NOT LOAD DATA FOR ${ticker}`))
       .finally(() => setLoading(false))
@@ -208,6 +214,9 @@ export default function StockPage() {
         @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         @keyframes crosshair{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
         @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+        @keyframes priceFlashGreen{0%{color:#4ade80;text-shadow:0 0 16px rgba(74,222,128,0.5)}100%{color:#f8fafc;text-shadow:none}}
+        @keyframes priceFlashRed{0%{color:#f87171;text-shadow:0 0 16px rgba(248,113,113,0.5)}100%{color:#f8fafc;text-shadow:none}}
+        @keyframes liveSweep{0%{left:-30%}100%{left:130%}}
         ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-track{background:#040b18} ::-webkit-scrollbar-thumb{background:#1e3050;border-radius:2px}
       `}</style>
 
@@ -271,14 +280,23 @@ export default function StockPage() {
                   <div style={{ fontSize:12,color:'#475569',fontFamily:'monospace' }}>{ticker} // UPDATES EVERY 30s</div>
                 </div>
                 <div style={{ textAlign:'right' as const }}>
-                  <div style={{ fontSize:40,fontWeight:800,fontFamily:'monospace',letterSpacing:'-1.5px',color:'#f8fafc' }}>
+                  <div
+                    key={flashKey}
+                    style={{
+                      fontSize:40,fontWeight:800,fontFamily:'monospace',letterSpacing:'-1.5px',color:'#f8fafc',
+                      animation: priceDir ? `${priceDir==='up'?'priceFlashGreen':'priceFlashRed'} 1.2s ease-out` : 'none',
+                    }}
+                  >
                     ${livePrice.toFixed(2)}
                   </div>
-                  <div style={{ display:'flex',alignItems:'center',justifyContent:'flex-end',gap:8,marginTop:4 }}>
-                    <div style={{ width:6,height:6,borderRadius:'50%',background:'#22c55e' }} />
-                    <span style={{ fontSize:10,color:'#22c55e',fontFamily:'monospace',letterSpacing:'0.06em' }}>LIVE</span>
+                  <div style={{ display:'flex',alignItems:'center',justifyContent:'flex-end',gap:8,marginTop:6 }}>
+                    {/* Live sweep bar */}
+                    <div style={{ position:'relative' as const,width:34,height:3,background:'rgba(34,197,94,0.12)',borderRadius:2,overflow:'hidden' }}>
+                      <div style={{ position:'absolute' as const,top:0,bottom:0,width:'30%',background:'linear-gradient(90deg,transparent,#22c55e,transparent)',animation:'liveSweep 2.4s ease-in-out infinite' }} />
+                    </div>
+                    <span style={{ fontSize:10,color:'#22c55e',fontFamily:'monospace',letterSpacing:'0.1em',fontWeight:600 }}>LIVE</span>
                     {lastUpdated && (
-                      <span style={{ fontSize:9,color:'#334155',fontFamily:'monospace' }}>
+                      <span style={{ fontSize:10,color:'#64748b',fontFamily:'monospace',letterSpacing:'0.04em' }}>
                         {lastUpdated.toLocaleTimeString('en-US',{hour12:false})}
                       </span>
                     )}
