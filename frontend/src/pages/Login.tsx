@@ -3,13 +3,13 @@ import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
 export default function Login() {
-  const navigate                = useNavigate()
-  const { login, isLoading }    = useAuth()
-  const [email, setEmail]       = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError]       = useState('')
-  const [visible, setVisible]   = useState(false)
-  const [exiting, setExiting]   = useState(false)
+  const navigate                        = useNavigate()
+  const { login, isLoading }            = useAuth()
+  const [credential, setCredential]     = useState('')
+  const [password, setPassword]         = useState('')
+  const [error, setError]               = useState('')
+  const [visible, setVisible]           = useState(false)
+  const [exiting, setExiting]           = useState(false)
 
   useEffect(() => {
     const t = setTimeout(() => setVisible(true), 60)
@@ -24,8 +24,8 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    if (!email.includes('@') || !email.includes('.')) {
-      setError('ERR: INVALID EMAIL FORMAT')
+    if (!credential.trim()) {
+      setError('ERR: EMAIL OR USERNAME REQUIRED')
       return
     }
     if (password.length < 8) {
@@ -33,10 +33,10 @@ export default function Login() {
       return
     }
     try {
-      await login(email, password)
+      await login(credential.trim(), password)
       navigate('/dashboard')
     } catch {
-      setError('ERR: INVALID CREDENTIALS — CHECK EMAIL AND PASSWORD')
+      setError('ERR: INVALID CREDENTIALS — CHECK EMAIL/USERNAME AND PASSWORD')
     }
   }
 
@@ -99,7 +99,7 @@ export default function Login() {
               <rect width="28" height="28" rx="4" stroke="#6366f1" strokeWidth="1.5"/>
               <path d="M6 19 L10 13 L14 16 L19 9" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
-            <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' as const, fontFamily: "'Space Grotesk', sans-serif" }}>Vestr</span>
+            <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' as const }}>Vestr</span>
           </div>
           <div style={{ width: 60 }} />
         </nav>
@@ -111,7 +111,7 @@ export default function Login() {
               <div style={{ fontSize: 10, color: 'rgba(59,130,246,0.4)', fontFamily: 'monospace', letterSpacing: '0.12em', marginBottom: 12 }}>
                 SEC. AUTH // SIGN IN
               </div>
-              <h1 style={{ fontSize: 36, fontWeight: 700, letterSpacing: '-1.5px', marginBottom: 8, color: '#f1f5f9', fontFamily: "'Space Grotesk', sans-serif" }}>
+              <h1 style={{ fontSize: 36, fontWeight: 700, letterSpacing: '-1.5px', marginBottom: 8, color: '#f1f5f9' }}>
                 Welcome back.
               </h1>
               <p style={{ fontSize: 12, color: '#475569', fontFamily: 'monospace' }}>
@@ -135,12 +135,14 @@ export default function Login() {
                 <form onSubmit={handleSubmit} noValidate>
                   <div style={{ marginBottom: 18 }}>
                     <label style={{ display: 'block', fontSize: 10, color: 'rgba(59,130,246,0.45)', fontFamily: 'monospace', letterSpacing: '0.1em', marginBottom: 8 }}>
-                      FIELD_01 // EMAIL ADDRESS or USERNAME
+                      FIELD_01 // EMAIL OR USERNAME
                     </label>
                     <input
-                      type="email" value={email} required
-                      onChange={e => setEmail(e.target.value)}
+                      type="text"
+                      value={credential}
+                      onChange={e => setCredential(e.target.value)}
                       placeholder="email or username"
+                      autoComplete="username"
                       style={inputStyle}
                       onFocus={e => e.target.style.borderColor = 'rgba(99,102,241,0.5)'}
                       onBlur={e => e.target.style.borderColor = 'rgba(59,130,246,0.18)'}
@@ -152,9 +154,11 @@ export default function Login() {
                       FIELD_02 // PASSWORD
                     </label>
                     <input
-                      type="password" value={password} required
+                      type="password"
+                      value={password}
                       onChange={e => setPassword(e.target.value)}
                       placeholder="••••••••"
+                      autoComplete="current-password"
                       style={inputStyle}
                       onFocus={e => e.target.style.borderColor = 'rgba(99,102,241,0.5)'}
                       onBlur={e => e.target.style.borderColor = 'rgba(59,130,246,0.18)'}
@@ -168,7 +172,7 @@ export default function Login() {
                       fontSize: 11, color: '#ef4444', fontFamily: 'monospace',
                       display: 'flex', alignItems: 'center', gap: 8,
                     }}>
-                      <span style={{ color: '#ef4444', fontSize: 13 }}>⚑</span>
+                      <span style={{ fontSize: 13 }}>⚑</span>
                       {error}
                     </div>
                   )}
